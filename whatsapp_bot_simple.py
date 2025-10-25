@@ -467,7 +467,7 @@ def handle_instagram_content(recipient_id: str, url: str):
         messenger.send_message(f"❌ *Failed to download Instagram content*\nError: {str(e)}", recipient_id)
 
 def handle_youtube_content(recipient_id: str, url: str):
-    """Handle YouTube content"""
+    """Handle YouTube content with proper cookie handling"""
     try:
         messenger.send_message("📥 *Downloading YouTube content...*", recipient_id)
         
@@ -487,16 +487,20 @@ def handle_youtube_content(recipient_id: str, url: str):
             
             ydl_opts = {
                 'format': 'best[ext=mp4]/best',
-                'outtmpl': os.path.join(download_dir, '%(id)s.%(ext)s'),
+                'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
                 'quiet': True,
                 'no_warnings': True,
                 'merge_output_format': 'mp4',
                 'noplaylist': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 20,
             }
             
             # Add cookies if available
-            if cookies_file:
+            if cookies_file and os.path.exists(cookies_file):
                 ydl_opts['cookiefile'] = cookies_file
+                logger.info("🍪 Using YouTube cookies for authentication")
             
             ydl = yt_dlp.YoutubeDL(ydl_opts)
             info = ydl.extract_info(url, download=False)
@@ -525,13 +529,18 @@ def handle_youtube_content(recipient_id: str, url: str):
                 file_size = os.path.getsize(video_file)
                 size_mb = file_size / (1024 * 1024)
                 messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
-                messenger.send_document(video_file, recipient_id, f"YouTube Video • {title}")
+                result = messenger.send_document(video_file, recipient_id, f"YouTube Video • {title}")
+                
                 # Clean up after sending
                 try:
                     os.remove(video_file)
                     os.rmdir(download_dir)
                 except:
                     pass
+                    
+                # Check if sending was successful
+                if not result.get('success', False):
+                    messenger.send_message(f"⚠️ *File downloaded but failed to send*\nError: {result.get('error', 'Unknown error')}", recipient_id)
             else:
                 messenger.send_message("❌ *Download failed - No video file found*", recipient_id)
         else:
@@ -539,7 +548,10 @@ def handle_youtube_content(recipient_id: str, url: str):
             
     except Exception as e:
         logger.error(f"YouTube content handling failed: {e}")
-        messenger.send_message(f"❌ *Failed to download YouTube content*\nError: {str(e)}", recipient_id)
+        if "Sign in to confirm you're not a bot" in str(e):
+            messenger.send_message("❌ *YouTube authentication required*\nPlease update your YouTube cookies file.", recipient_id)
+        else:
+            messenger.send_message(f"❌ *Failed to download YouTube content*\nError: {str(e)}", recipient_id)
 
 def handle_tiktok_content(recipient_id: str, url: str):
     """Handle TikTok content"""
@@ -571,7 +583,7 @@ def handle_facebook_content(recipient_id: str, url: str):
         messenger.send_message(f"❌ *Failed to download Facebook content*\nError: {str(e)}", recipient_id)
 
 def handle_spotify_content(recipient_id: str, url: str):
-    """Handle Spotify content"""
+    """Handle Spotify content with proper DRM handling"""
     try:
         messenger.send_message("📥 *Downloading Spotify content...*", recipient_id)
         
@@ -592,6 +604,9 @@ def handle_spotify_content(recipient_id: str, url: str):
                     'preferredquality': '192',
                 }],
                 'noplaylist': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 20,
             }
             
             ydl = yt_dlp.YoutubeDL(ydl_opts)
@@ -622,13 +637,17 @@ def handle_spotify_content(recipient_id: str, url: str):
                 file_size = os.path.getsize(audio_file)
                 size_mb = file_size / (1024 * 1024)
                 messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
-                messenger.send_document(audio_file, recipient_id, f"Audio • {title}")
+                result = messenger.send_document(audio_file, recipient_id, f"Audio • {title}")
                 # Clean up after sending
                 try:
                     os.remove(audio_file)
                     os.rmdir(download_dir)
                 except:
                     pass
+                    
+                # Check if sending was successful
+                if not result.get('success', False):
+                    messenger.send_message(f"⚠️ *File downloaded but failed to send*\nError: {result.get('error', 'Unknown error')}", recipient_id)
             else:
                 # Try to get a preview URL if full download failed
                 preview_url = info.get('url') or info.get('webpage_url')
@@ -642,7 +661,8 @@ def handle_spotify_content(recipient_id: str, url: str):
             
     except Exception as e:
         logger.error(f"Spotify content handling failed: {e}")
-        if "DRM" in str(e):
+        error_msg = str(e).lower()
+        if "drm" in error_msg:
             messenger.send_message("❌ *Spotify content is DRM protected and cannot be downloaded*", recipient_id)
         else:
             messenger.send_message(f"❌ *Failed to download Spotify content*\nError: {str(e)}", recipient_id)
@@ -657,7 +677,7 @@ def handle_twitter_content(recipient_id: str, url: str):
         messenger.send_message(f"❌ *Failed to download Twitter content*\nError: {str(e)}", recipient_id)
 
 def handle_generic_content(recipient_id: str, url: str):
-    """Handle generic content download"""
+    """Handle generic content download with proper error handling"""
     try:
         # Use yt-dlp for generic content download
         if YTDLP_AVAILABLE and yt_dlp is not None:
@@ -686,11 +706,15 @@ def handle_generic_content(recipient_id: str, url: str):
                 'no_warnings': True,
                 'merge_output_format': 'mp4',
                 'noplaylist': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 20,
             }
             
             # Add cookies if available
-            if cookies_file:
+            if cookies_file and os.path.exists(cookies_file):
                 ydl_opts['cookiefile'] = cookies_file
+                logger.info(f"🍪 Using cookies file: {cookies_file}")
             
             ydl = yt_dlp.YoutubeDL(ydl_opts)
             # Extract info first
@@ -749,7 +773,13 @@ def handle_generic_content(recipient_id: str, url: str):
             
     except Exception as e:
         logger.error(f"Generic content handling failed: {e}")
-        messenger.send_message(f"❌ *Failed to download content*\nError: {str(e)}", recipient_id)
+        error_msg = str(e).lower()
+        if "drm" in error_msg:
+            messenger.send_message("❌ *Content is DRM protected and cannot be downloaded*", recipient_id)
+        elif "private" in error_msg or "unavailable" in error_msg:
+            messenger.send_message("❌ *Content is private or unavailable*", recipient_id)
+        else:
+            messenger.send_message(f"❌ *Failed to download content*\nError: {str(e)}", recipient_id)
 
 def verify_webhook(mode: str, token: str, challenge: str):
     """Verify webhook subscription"""
