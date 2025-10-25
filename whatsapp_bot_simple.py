@@ -480,6 +480,11 @@ def handle_youtube_content(recipient_id: str, url: str):
             download_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
             os.makedirs(download_dir, exist_ok=True)
             
+            # Check if YouTube cookies file exists
+            cookies_file = "ytcookies.txt"
+            if not os.path.exists(cookies_file):
+                cookies_file = None
+            
             ydl_opts = {
                 'format': 'best[ext=mp4]/best',
                 'outtmpl': os.path.join(download_dir, '%(id)s.%(ext)s'),
@@ -488,6 +493,10 @@ def handle_youtube_content(recipient_id: str, url: str):
                 'merge_output_format': 'mp4',
                 'noplaylist': True,
             }
+            
+            # Add cookies if available
+            if cookies_file:
+                ydl_opts['cookiefile'] = cookies_file
             
             ydl = yt_dlp.YoutubeDL(ydl_opts)
             info = ydl.extract_info(url, download=False)
@@ -535,6 +544,17 @@ def handle_youtube_content(recipient_id: str, url: str):
 def handle_tiktok_content(recipient_id: str, url: str):
     """Handle TikTok content"""
     try:
+        # Resolve shortened URLs first
+        if url.startswith('https://vt.tiktok.com/'):
+            import requests
+            try:
+                # Follow redirect to get the real URL
+                response = requests.head(url, allow_redirects=True, timeout=10)
+                if response.status_code == 200:
+                    url = response.url
+            except:
+                pass  # If resolution fails, continue with original URL
+        
         messenger.send_message("📥 *Downloading TikTok content...*", recipient_id)
         handle_generic_content(recipient_id, url)
     except Exception as e:
@@ -610,7 +630,13 @@ def handle_spotify_content(recipient_id: str, url: str):
                 except:
                     pass
             else:
-                messenger.send_message("❌ *Download failed - No audio file found*", recipient_id)
+                # Try to get a preview URL if full download failed
+                preview_url = info.get('url') or info.get('webpage_url')
+                if preview_url and 'preview' in preview_url:
+                    # Send a message with the preview URL
+                    messenger.send_message(f"🎵 *{title}*\n👤 *Artist: {uploader}*\n\n⚠️ Full audio download not available. You can listen to a preview here:\n{preview_url}", recipient_id)
+                else:
+                    messenger.send_message("❌ *Download failed - No audio file found*", recipient_id)
         else:
             messenger.send_message("❌ *Media download not available*", recipient_id)
             
@@ -642,6 +668,17 @@ def handle_generic_content(recipient_id: str, url: str):
             download_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
             os.makedirs(download_dir, exist_ok=True)
             
+            # Check if cookies files exist for specific platforms
+            cookies_file = None
+            if 'youtube.com' in url or 'youtu.be' in url:
+                cookies_file = "ytcookies.txt"
+            elif 'instagram.com' in url:
+                cookies_file = "cookies.txt"
+            
+            # Check if cookies file exists
+            if cookies_file and not os.path.exists(cookies_file):
+                cookies_file = None
+            
             ydl_opts = {
                 'format': 'best[ext=mp4]/best/bestvideo*+bestaudio/best',
                 'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
@@ -650,6 +687,10 @@ def handle_generic_content(recipient_id: str, url: str):
                 'merge_output_format': 'mp4',
                 'noplaylist': True,
             }
+            
+            # Add cookies if available
+            if cookies_file:
+                ydl_opts['cookiefile'] = cookies_file
             
             ydl = yt_dlp.YoutubeDL(ydl_opts)
             # Extract info first
@@ -688,13 +729,19 @@ def handle_generic_content(recipient_id: str, url: str):
                 else:
                     caption = f"Media • {title}"
                     
-                messenger.send_document(downloaded_file, recipient_id, caption)
+                # Send the actual file
+                result = messenger.send_document(downloaded_file, recipient_id, caption)
+                
                 # Clean up after sending
                 try:
                     os.remove(downloaded_file)
                     os.rmdir(download_dir)
                 except:
                     pass
+                    
+                # If sending failed, send a message about it
+                if not result.get('success', False):
+                    messenger.send_message(f"⚠️ *File downloaded but failed to send*\nError: {result.get('error', 'Unknown error')}", recipient_id)
             else:
                 messenger.send_message("❌ *Download failed - No file found*", recipient_id)
         else:
