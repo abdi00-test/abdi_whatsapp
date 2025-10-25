@@ -5,7 +5,11 @@ import re
 import logging
 import json
 import requests
+import tempfile
+import uuid
+import shutil
 from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
 
 # Import heyoo for WhatsApp API
 try:
@@ -222,7 +226,7 @@ def detect_platform(url: str) -> str:
         return 'youtube'
     elif 'tiktok.com' in url_lower:
         return 'tiktok'
-    elif 'facebook.com' in url_lower:
+    elif 'facebook.com' in url_lower or 'fb.watch' in url_lower or 'fb.me' in url_lower:
         return 'facebook'
     elif 'spotify.com' in url_lower:
         return 'spotify'
@@ -353,12 +357,30 @@ def process_message(recipient_id: str, text: str):
     # Default response for unrecognized messages
     messenger.send_message("💡 *Tip*\n\nSend a social media link to download content, or type *help* for more information!", recipient_id)
 
+# Add a simple cache to prevent duplicate processing
+processed_urls = set()
+last_cleanup_time = time.time()
+
 def handle_link(recipient_id: str, url: str):
     """Handle incoming links with intelligent processing"""
+    global last_cleanup_time
+    
     # Basic URL validation
     if not url.startswith(('http://', 'https://')):
         messenger.send_message("❌ *Invalid URL*\n\nPlease send a valid link starting with http:// or https://", recipient_id)
         return
+    
+    # Check if URL has already been processed
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    if url_hash in processed_urls:
+        messenger.send_message("🔄 *This link has already been processed*", recipient_id)
+        return
+    
+    # Clean up old processed URLs periodically (every 10 minutes)
+    current_time = time.time()
+    if current_time - last_cleanup_time > 600:  # 10 minutes
+        processed_urls.clear()
+        last_cleanup_time = current_time
     
     if not is_supported_url(url):
         messenger.send_message(
@@ -373,6 +395,9 @@ def handle_link(recipient_id: str, url: str):
     
     # Show processing message
     messenger.send_message(f"🔄 *Processing {platform.title()} link...*", recipient_id)
+    
+    # Add to processed URLs
+    processed_urls.add(url_hash)
     
     # Handle different platforms
     if platform == 'instagram_reel':
@@ -446,11 +471,18 @@ def handle_youtube_content(recipient_id: str, url: str):
     try:
         messenger.send_message("📥 *Downloading YouTube content...*", recipient_id)
         
+        # Ensure temp directory exists
+        ensure_directories()
+        
         # Extract information using yt-dlp
         if YTDLP_AVAILABLE and yt_dlp is not None:
+            # Create unique temporary directory for this download
+            download_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
+            os.makedirs(download_dir, exist_ok=True)
+            
             ydl_opts = {
                 'format': 'best[ext=mp4]/best',
-                'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
+                'outtmpl': os.path.join(download_dir, '%(id)s.%(ext)s'),
                 'quiet': True,
                 'no_warnings': True,
                 'merge_output_format': 'mp4',
@@ -472,18 +504,27 @@ def handle_youtube_content(recipient_id: str, url: str):
             
             # Find downloaded file
             video_file = None
-            for file in os.listdir(TEMP_DIR):
-                if file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
-                    video_file = os.path.join(TEMP_DIR, file)
+            for root, dirs, files in os.walk(download_dir):
+                for file in files:
+                    if file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
+                        video_file = os.path.join(root, file)
+                        break
+                if video_file:
                     break
             
             if video_file and os.path.exists(video_file):
                 file_size = os.path.getsize(video_file)
                 size_mb = file_size / (1024 * 1024)
                 messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
-                messenger.send_document(video_file, recipient_id, f"YouTube Video • {os.path.basename(video_file)}")
+                messenger.send_document(video_file, recipient_id, f"YouTube Video • {title}")
+                # Clean up after sending
+                try:
+                    os.remove(video_file)
+                    os.rmdir(download_dir)
+                except:
+                    pass
             else:
-                messenger.send_message("❌ *Download failed*", recipient_id)
+                messenger.send_message("❌ *Download failed - No video file found*", recipient_id)
         else:
             messenger.send_message("❌ *yt-dlp not available*", recipient_id)
             
@@ -513,10 +554,72 @@ def handle_spotify_content(recipient_id: str, url: str):
     """Handle Spotify content"""
     try:
         messenger.send_message("📥 *Downloading Spotify content...*", recipient_id)
-        handle_generic_content(recipient_id, url)
+        
+        # For Spotify, we'll try to download audio
+        if YTDLP_AVAILABLE and yt_dlp is not None:
+            # Create unique temporary directory for this download
+            download_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
+            os.makedirs(download_dir, exist_ok=True)
+            
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'noplaylist': True,
+            }
+            
+            ydl = yt_dlp.YoutubeDL(ydl_opts)
+            # Extract info first
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Spotify Audio')
+            uploader = info.get('uploader', 'Unknown') if info.get('uploader') else info.get('artist', 'Unknown')
+            
+            # Send info message
+            info_message = f"🎵 *{title}*\n👤 *Artist: {uploader}*"
+            messenger.send_message(info_message, recipient_id)
+            
+            # Download the content
+            messenger.send_message("⬇️ *Downloading audio file...*", recipient_id)
+            ydl.download([url])
+            
+            # Find downloaded file
+            audio_file = None
+            for root, dirs, files in os.walk(download_dir):
+                for file in files:
+                    if file.endswith(('.mp3', '.m4a', '.wav', '.flac')):
+                        audio_file = os.path.join(root, file)
+                        break
+                if audio_file:
+                    break
+            
+            if audio_file and os.path.exists(audio_file):
+                file_size = os.path.getsize(audio_file)
+                size_mb = file_size / (1024 * 1024)
+                messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
+                messenger.send_document(audio_file, recipient_id, f"Audio • {title}")
+                # Clean up after sending
+                try:
+                    os.remove(audio_file)
+                    os.rmdir(download_dir)
+                except:
+                    pass
+            else:
+                messenger.send_message("❌ *Download failed - No audio file found*", recipient_id)
+        else:
+            messenger.send_message("❌ *Media download not available*", recipient_id)
+            
     except Exception as e:
         logger.error(f"Spotify content handling failed: {e}")
-        messenger.send_message(f"❌ *Failed to download Spotify content*\nError: {str(e)}", recipient_id)
+        if "DRM" in str(e):
+            messenger.send_message("❌ *Spotify content is DRM protected and cannot be downloaded*", recipient_id)
+        else:
+            messenger.send_message(f"❌ *Failed to download Spotify content*\nError: {str(e)}", recipient_id)
 
 def handle_twitter_content(recipient_id: str, url: str):
     """Handle Twitter/X content"""
@@ -532,9 +635,16 @@ def handle_generic_content(recipient_id: str, url: str):
     try:
         # Use yt-dlp for generic content download
         if YTDLP_AVAILABLE and yt_dlp is not None:
+            # Ensure temp directory exists
+            ensure_directories()
+            
+            # Create unique temporary directory for this download
+            download_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
+            os.makedirs(download_dir, exist_ok=True)
+            
             ydl_opts = {
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
+                'format': 'best[ext=mp4]/best/bestvideo*+bestaudio/best',
+                'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
                 'quiet': True,
                 'no_warnings': True,
                 'merge_output_format': 'mp4',
@@ -552,23 +662,41 @@ def handle_generic_content(recipient_id: str, url: str):
             messenger.send_message(info_message, recipient_id)
             
             # Download the content
-            messenger.send_message("⬇️ *Downloading video file...*", recipient_id)
+            messenger.send_message("⬇️ *Downloading file...*", recipient_id)
             ydl.download([url])
             
             # Find downloaded file
-            video_file = None
-            for file in os.listdir(TEMP_DIR):
-                if file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
-                    video_file = os.path.join(TEMP_DIR, file)
+            downloaded_file = None
+            for root, dirs, files in os.walk(download_dir):
+                for file in files:
+                    if file.endswith(('.mp4', '.mov', '.avi', '.mkv', '.m4a', '.mp3', '.wav', '.flac')):
+                        downloaded_file = os.path.join(root, file)
+                        break
+                if downloaded_file:
                     break
             
-            if video_file and os.path.exists(video_file):
-                file_size = os.path.getsize(video_file)
+            if downloaded_file and os.path.exists(downloaded_file):
+                file_size = os.path.getsize(downloaded_file)
                 size_mb = file_size / (1024 * 1024)
                 messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
-                messenger.send_document(video_file, recipient_id, f"Video • {os.path.basename(video_file)}")
+                
+                # Determine caption based on file type
+                if downloaded_file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
+                    caption = f"Video • {title}"
+                elif downloaded_file.endswith(('.m4a', '.mp3', '.wav', '.flac')):
+                    caption = f"Audio • {title}"
+                else:
+                    caption = f"Media • {title}"
+                    
+                messenger.send_document(downloaded_file, recipient_id, caption)
+                # Clean up after sending
+                try:
+                    os.remove(downloaded_file)
+                    os.rmdir(download_dir)
+                except:
+                    pass
             else:
-                messenger.send_message("❌ *Download failed*", recipient_id)
+                messenger.send_message("❌ *Download failed - No file found*", recipient_id)
         else:
             messenger.send_message("❌ *Media download not available*", recipient_id)
             
