@@ -374,13 +374,25 @@ def handle_link(recipient_id: str, url: str):
     # Show processing message
     messenger.send_message(f"🔄 *Processing {platform.title()} link...*", recipient_id)
     
-    # Handle Instagram reel specifically (as requested in the task)
+    # Handle different platforms
     if platform == 'instagram_reel':
         handle_instagram_reel(recipient_id, url)
-        return
-    
-    # For other content, send a generic response
-    messenger.send_message(f"🔄 *Processing {platform.title()} content...*\nThis may take a few moments.", recipient_id)
+    elif platform == 'instagram':
+        handle_instagram_content(recipient_id, url)
+    elif platform == 'youtube':
+        handle_youtube_content(recipient_id, url)
+    elif platform == 'tiktok':
+        handle_tiktok_content(recipient_id, url)
+    elif platform == 'facebook':
+        handle_facebook_content(recipient_id, url)
+    elif platform == 'spotify':
+        handle_spotify_content(recipient_id, url)
+    elif platform == 'twitter':
+        handle_twitter_content(recipient_id, url)
+    else:
+        # For other content, send a generic response
+        messenger.send_message(f"🔄 *Processing {platform.title()} content...*\nThis may take a few moments.", recipient_id)
+        handle_generic_content(recipient_id, url)
 
 def handle_instagram_reel(recipient_id: str, url: str):
     """Handle Instagram reel download and send with real information extraction"""
@@ -415,6 +427,154 @@ def handle_instagram_reel(recipient_id: str, url: str):
     except Exception as e:
         logger.error(f"Instagram reel handling failed: {e}")
         messenger.send_message(f"❌ *Failed to download Instagram reel*\nError: {str(e)}", recipient_id)
+
+def handle_instagram_content(recipient_id: str, url: str):
+    """Handle Instagram content (posts, stories, etc.)"""
+    try:
+        messenger.send_message("📥 *Downloading Instagram content...*", recipient_id)
+        
+        # For now, we'll use a generic approach
+        # In a full implementation, you would extract specific Instagram content
+        handle_generic_content(recipient_id, url)
+        
+    except Exception as e:
+        logger.error(f"Instagram content handling failed: {e}")
+        messenger.send_message(f"❌ *Failed to download Instagram content*\nError: {str(e)}", recipient_id)
+
+def handle_youtube_content(recipient_id: str, url: str):
+    """Handle YouTube content"""
+    try:
+        messenger.send_message("📥 *Downloading YouTube content...*", recipient_id)
+        
+        # Extract information using yt-dlp
+        if YTDLP_AVAILABLE and yt_dlp is not None:
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+                'merge_output_format': 'mp4',
+                'noplaylist': True,
+            }
+            
+            ydl = yt_dlp.YoutubeDL(ydl_opts)
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'YouTube Video')
+            uploader = info.get('uploader', 'Unknown')
+            
+            # Send info message
+            info_message = f"📹 *{title}*\n👤 *Uploader: {uploader}*"
+            messenger.send_message(info_message, recipient_id)
+            
+            # Download the content
+            messenger.send_message("⬇️ *Downloading video file...*", recipient_id)
+            ydl.download([url])
+            
+            # Find downloaded file
+            video_file = None
+            for file in os.listdir(TEMP_DIR):
+                if file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
+                    video_file = os.path.join(TEMP_DIR, file)
+                    break
+            
+            if video_file and os.path.exists(video_file):
+                file_size = os.path.getsize(video_file)
+                size_mb = file_size / (1024 * 1024)
+                messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
+                messenger.send_document(video_file, recipient_id, f"YouTube Video • {os.path.basename(video_file)}")
+            else:
+                messenger.send_message("❌ *Download failed*", recipient_id)
+        else:
+            messenger.send_message("❌ *yt-dlp not available*", recipient_id)
+            
+    except Exception as e:
+        logger.error(f"YouTube content handling failed: {e}")
+        messenger.send_message(f"❌ *Failed to download YouTube content*\nError: {str(e)}", recipient_id)
+
+def handle_tiktok_content(recipient_id: str, url: str):
+    """Handle TikTok content"""
+    try:
+        messenger.send_message("📥 *Downloading TikTok content...*", recipient_id)
+        handle_generic_content(recipient_id, url)
+    except Exception as e:
+        logger.error(f"TikTok content handling failed: {e}")
+        messenger.send_message(f"❌ *Failed to download TikTok content*\nError: {str(e)}", recipient_id)
+
+def handle_facebook_content(recipient_id: str, url: str):
+    """Handle Facebook content"""
+    try:
+        messenger.send_message("📥 *Downloading Facebook content...*", recipient_id)
+        handle_generic_content(recipient_id, url)
+    except Exception as e:
+        logger.error(f"Facebook content handling failed: {e}")
+        messenger.send_message(f"❌ *Failed to download Facebook content*\nError: {str(e)}", recipient_id)
+
+def handle_spotify_content(recipient_id: str, url: str):
+    """Handle Spotify content"""
+    try:
+        messenger.send_message("📥 *Downloading Spotify content...*", recipient_id)
+        handle_generic_content(recipient_id, url)
+    except Exception as e:
+        logger.error(f"Spotify content handling failed: {e}")
+        messenger.send_message(f"❌ *Failed to download Spotify content*\nError: {str(e)}", recipient_id)
+
+def handle_twitter_content(recipient_id: str, url: str):
+    """Handle Twitter/X content"""
+    try:
+        messenger.send_message("📥 *Downloading Twitter content...*", recipient_id)
+        handle_generic_content(recipient_id, url)
+    except Exception as e:
+        logger.error(f"Twitter content handling failed: {e}")
+        messenger.send_message(f"❌ *Failed to download Twitter content*\nError: {str(e)}", recipient_id)
+
+def handle_generic_content(recipient_id: str, url: str):
+    """Handle generic content download"""
+    try:
+        # Use yt-dlp for generic content download
+        if YTDLP_AVAILABLE and yt_dlp is not None:
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+                'merge_output_format': 'mp4',
+                'noplaylist': True,
+            }
+            
+            ydl = yt_dlp.YoutubeDL(ydl_opts)
+            # Extract info first
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Video')
+            uploader = info.get('uploader', 'Unknown') if info.get('uploader') else info.get('uploader_id', 'Unknown')
+            
+            # Send info message
+            info_message = f"📹 *{title}*\n👤 *Uploader: {uploader}*"
+            messenger.send_message(info_message, recipient_id)
+            
+            # Download the content
+            messenger.send_message("⬇️ *Downloading video file...*", recipient_id)
+            ydl.download([url])
+            
+            # Find downloaded file
+            video_file = None
+            for file in os.listdir(TEMP_DIR):
+                if file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
+                    video_file = os.path.join(TEMP_DIR, file)
+                    break
+            
+            if video_file and os.path.exists(video_file):
+                file_size = os.path.getsize(video_file)
+                size_mb = file_size / (1024 * 1024)
+                messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
+                messenger.send_document(video_file, recipient_id, f"Video • {os.path.basename(video_file)}")
+            else:
+                messenger.send_message("❌ *Download failed*", recipient_id)
+        else:
+            messenger.send_message("❌ *Media download not available*", recipient_id)
+            
+    except Exception as e:
+        logger.error(f"Generic content handling failed: {e}")
+        messenger.send_message(f"❌ *Failed to download content*\nError: {str(e)}", recipient_id)
 
 def verify_webhook(mode: str, token: str, challenge: str):
     """Verify webhook subscription"""
