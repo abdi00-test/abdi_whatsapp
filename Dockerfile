@@ -22,4 +22,4 @@ COPY . .
 EXPOSE 8080
 
 # Run the application
-CMD ["python", "whatsapp_bot.py"]
+CMD ["python", "app.py"]
