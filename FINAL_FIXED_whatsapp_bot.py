@@ -5,7 +5,6 @@ import re
 import logging
 import json
 import asyncio
-import aiohttp
 import requests
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
@@ -34,6 +33,22 @@ except ImportError:
     instaloader = None
     INSTALOADER_AVAILABLE = False
     print("Warning: instaloader not available. Instagram features will be limited.")
+
+try:
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    aiohttp = None
+    AIOHTTP_AVAILABLE = False
+    print("Warning: aiohttp not available. Some features will be limited.")
+
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BeautifulSoup = None
+    BS4_AVAILABLE = False
+    print("Warning: BeautifulSoup not available. Some features will be limited.")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -101,9 +116,12 @@ class InstagramCookieManager:
                         if '.instagram.com' in domain:
                             self.cookies[name] = value
             
+            # Create a RequestsCookieJar for session cookies
             self.session_cookies = requests.cookies.RequestsCookieJar()
             for name, value in self.cookies.items():
-                self.session_cookies.set(name, value, domain='.instagram.com')
+                # Create a cookie object and add it to the jar
+                cookie = requests.cookies.create_cookie(domain='.instagram.com', name=name, value=value)
+                self.session_cookies.set_cookie(cookie)
             
             logger.info(f"✅ Loaded {len(self.cookies)} Instagram cookies from Netscape format")
             self._validate_loaded_cookies()
@@ -525,6 +543,15 @@ def normalize_youtube_shorts_url(url: str) -> str:
                 return normalized_url
             else:
                 logger.warning(f"⚠️ Incomplete YouTube ID detected: {video_id}")
+                # Try to extract a longer ID if available
+                match_full = re.search(r'youtube\.com/shorts/([a-zA-Z0-9_-]+)', url)
+                if match_full:
+                    full_id = match_full.group(1)
+                    if len(full_id) >= 11:
+                        full_id = full_id[:11]
+                        normalized_url = f"https://www.youtube.com/watch?v={full_id}"
+                        logger.info(f"✅ Normalized YouTube Shorts URL (full ID): {url} -> {normalized_url}")
+                        return normalized_url
     return url
 
 def is_supported_url(url: str) -> bool:
@@ -836,11 +863,12 @@ async def attempt_fallback_download(url: str, platform: str, temp_dir: str, file
                     else:
                         logger.debug(f"Instagram silent instaloader fallback failed: {e}")
             
-            media_info = await extract_direct_media_url(url, platform)
-            if media_info and media_info.get('url'):
-                return await download_direct_media(media_info['url'], platform)
+            if AIOHTTP_AVAILABLE and BS4_AVAILABLE:
+                media_info = await extract_direct_media_url(url, platform)
+                if media_info and media_info.get('url'):
+                    return await download_direct_media(media_info['url'], platform)
         
-        if platform in ['instagram', 'facebook', 'twitter']:
+        if platform in ['instagram', 'facebook', 'twitter'] and AIOHTTP_AVAILABLE and BS4_AVAILABLE:
             image_url = await extract_image_from_page(url, platform)
             if image_url:
                 return await download_direct_media(image_url, platform)
@@ -912,6 +940,7 @@ async def download_instagram_media(url: str) -> Optional[Dict]:
             )
             
             if instagram_auth.is_authenticated() and instagram_auth.session_cookies:
+                # Apply cookies to the session
                 loader.context._session.cookies.update(instagram_auth.session_cookies)
                 logger.info("✅ Instagram session loaded with cookies")
             
@@ -983,6 +1012,9 @@ def extract_instagram_shortcode(url: str) -> Optional[str]:
 
 async def extract_direct_media_url(url: str, platform: str) -> Optional[Dict]:
     """Extract direct media URLs using custom scrapers"""
+    if not AIOHTTP_AVAILABLE or not BS4_AVAILABLE:
+        return None
+        
     try:
         headers = {
             'User-Agent': USER_AGENTS.get(platform, USER_AGENTS['default']),
@@ -1009,6 +1041,9 @@ async def extract_direct_media_url(url: str, platform: str) -> Optional[Dict]:
 
 async def extract_pinterest_media(url: str, headers: Dict) -> Optional[Dict]:
     """Extract Pinterest media URLs"""
+    if not AIOHTTP_AVAILABLE or not BS4_AVAILABLE:
+        return None
+        
     try:
         if 'pin.it' in url:
             async with aiohttp.ClientSession(headers=headers) as session:
@@ -1021,7 +1056,6 @@ async def extract_pinterest_media(url: str, headers: Dict) -> Optional[Dict]:
                     return None
                 
                 html = await response.text()
-                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(html, 'html.parser')
                 
                 scripts = soup.find_all('script', string=re.compile(r'pinData|__PWS_DATA__'))
@@ -1155,6 +1189,9 @@ def extract_pinterest_urls_from_data(data: Dict) -> Optional[Dict]:
 
 async def extract_instagram_media_fallback(url: str, headers: Dict) -> Optional[Dict]:
     """Extract Instagram media URLs using fallback method"""
+    if not AIOHTTP_AVAILABLE or not BS4_AVAILABLE:
+        return None
+        
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
@@ -1162,7 +1199,6 @@ async def extract_instagram_media_fallback(url: str, headers: Dict) -> Optional[
                     return None
                 
                 html = await response.text()
-                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(html, 'html.parser')
                 
                 # Look for JSON data in script tags
@@ -1258,6 +1294,9 @@ async def extract_instagram_media_fallback(url: str, headers: Dict) -> Optional[
 
 async def extract_facebook_media(url: str, headers: Dict) -> Optional[Dict]:
     """Extract Facebook media URLs"""
+    if not AIOHTTP_AVAILABLE or not BS4_AVAILABLE:
+        return None
+        
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url) as response:
@@ -1265,7 +1304,6 @@ async def extract_facebook_media(url: str, headers: Dict) -> Optional[Dict]:
                     return None
                 
                 html = await response.text()
-                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(html, 'html.parser')
                 
                 og_video = soup.find('meta', property='og:video')
@@ -1291,6 +1329,9 @@ async def extract_facebook_media(url: str, headers: Dict) -> Optional[Dict]:
 
 async def extract_image_from_page(url: str, platform: str) -> Optional[str]:
     """Extract image URL directly from page HTML"""
+    if not AIOHTTP_AVAILABLE or not BS4_AVAILABLE:
+        return None
+        
     try:
         headers = {
             'User-Agent': USER_AGENTS.get(platform, USER_AGENTS['default'])
@@ -1302,7 +1343,6 @@ async def extract_image_from_page(url: str, platform: str) -> Optional[str]:
                     return None
                 
                 html = await response.text()
-                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(html, 'html.parser')
                 
                 selectors = [
@@ -1389,7 +1429,7 @@ async def get_media_info(url: str) -> Optional[Dict]:
         except Exception as ytdlp_error:
             logger.warning(f"yt-dlp failed: {ytdlp_error}")
             
-            if platform in ['pinterest', 'instagram', 'threads', 'facebook']:
+            if platform in ['pinterest', 'instagram', 'threads', 'facebook'] and AIOHTTP_AVAILABLE and BS4_AVAILABLE:
                 media_info = await extract_direct_media_url(url, platform)
                 if media_info:
                     return {
@@ -1424,7 +1464,6 @@ async def process_spotify_url(url: str) -> Optional[Dict]:
         if response.status_code != 200:
             return None
 
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(response.text, 'html.parser')
         title_tag = soup.find('meta', property='og:title')
         desc_tag = soup.find('meta', property='og:description')
@@ -1989,14 +2028,17 @@ async def handle_link(recipient_id: str, url: str):
                 recipient_id
             )
             
-            media_info = await extract_direct_media_url(url, platform)
-            if media_info:
-                messenger.send_message("⚡ Downloading content directly...", recipient_id)
-                file_path = await download_direct_media(media_info['url'], platform)
-                if file_path:
-                    await send_media_file(recipient_id, file_path, media_info['title'], media_info['type'])
+            if AIOHTTP_AVAILABLE and BS4_AVAILABLE:
+                media_info = await extract_direct_media_url(url, platform)
+                if media_info:
+                    messenger.send_message("⚡ Downloading content directly...", recipient_id)
+                    file_path = await download_direct_media(media_info['url'], platform)
+                    if file_path:
+                        await send_media_file(recipient_id, file_path, media_info['title'], media_info['type'])
+                    else:
+                        messenger.send_message(f"❌ Download failed\n\nCould not download content from {platform.title()}.", recipient_id)
                 else:
-                    messenger.send_message(f"❌ Download failed\n\nCould not download content from {platform.title()}.", recipient_id)
+                    messenger.send_message(f"❌ Could not process this {platform.title()} link\n\nThe content might be private or unsupported.", recipient_id)
             else:
                 messenger.send_message(f"❌ Could not process this {platform.title()} link\n\nThe content might be private or unsupported.", recipient_id)
             return

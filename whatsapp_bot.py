@@ -5,9 +5,8 @@ import re
 import logging
 import json
 import asyncio
-import aiohttp
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 
 # Import configuration
@@ -35,9 +34,28 @@ except ImportError:
     INSTALOADER_AVAILABLE = False
     print("Warning: instaloader not available. Instagram features will be limited.")
 
+try:
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    aiohttp = None
+    AIOHTTP_AVAILABLE = False
+    print("Warning: aiohttp not available. Some features will be limited.")
+
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BeautifulSoup = None
+    BS4_AVAILABLE = False
+    print("Warning: BeautifulSoup not available. Some features will be limited.")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Track processed URLs to prevent duplicates
+processed_urls = set()
 
 class InstagramCookieManager:
     """Manages Instagram cookies for authentication and proxy support"""
@@ -98,8 +116,10 @@ class InstagramCookieManager:
                         if '.instagram.com' in domain:
                             self.cookies[name] = value
             
+            # Create a RequestsCookieJar for session cookies
             self.session_cookies = requests.cookies.RequestsCookieJar()
             for name, value in self.cookies.items():
+                # Add cookie directly to the jar
                 self.session_cookies.set(name, value, domain='.instagram.com')
             
             logger.info(f"✅ Loaded {len(self.cookies)} Instagram cookies from Netscape format")
@@ -248,9 +268,19 @@ class WhatsAppBusiness:
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
+        # Track sent messages to prevent duplicates
+        self.sent_messages = set()
     
     def send_message(self, message: str, recipient_id: str) -> Dict[str, Any]:
         """Send a text message via WhatsApp API"""
+        # Create a unique key for this message
+        message_key = f"{recipient_id}:{hashlib.md5(message.encode()).hexdigest()}"
+        
+        # Check if we've already sent this message
+        if message_key in self.sent_messages:
+            logger.debug(f"Skipping duplicate message to {recipient_id}: {message[:50]}...")
+            return {"success": True}
+        
         payload = {
             "messaging_product": "whatsapp",
             "to": recipient_id,
@@ -263,6 +293,8 @@ class WhatsAppBusiness:
             response = requests.post(self.api_url, json=payload, headers=self.headers)
             if response.status_code == 200:
                 logger.info(f"✅ Message sent successfully to {recipient_id}")
+                # Add to sent messages set
+                self.sent_messages.add(message_key)
                 return {"success": True}
             else:
                 logger.error(f"❌ Failed to send message to {recipient_id}: {response.text}")
@@ -274,6 +306,20 @@ class WhatsAppBusiness:
     def send_media(self, media_path: str, recipient_id: str, media_type: str, caption: Optional[str] = None) -> Dict[str, Any]:
         """Send media (image/video/audio) via WhatsApp API"""
         try:
+            # Check if file exists
+            if not os.path.exists(media_path):
+                logger.error(f"❌ Media file not found: {media_path}")
+                return {"success": False, "error": "File not found"}
+            
+            # Create a unique key for this media
+            file_hash = hashlib.md5(open(media_path, 'rb').read()).hexdigest()
+            media_key = f"{recipient_id}:{file_hash}"
+            
+            # Check if we've already sent this media
+            if media_key in self.sent_messages:
+                logger.debug(f"Skipping duplicate media to {recipient_id}: {media_path}")
+                return {"success": True}
+            
             # Determine MIME type based on file extension
             file_extension = media_path.lower().split('.')[-1]
             mime_types = {
@@ -359,6 +405,8 @@ class WhatsAppBusiness:
                     send_response = requests.post(self.api_url, json=payload, headers=self.headers)
                     if send_response.status_code == 200:
                         logger.info(f"✅ {media_type.title()} sent successfully to {recipient_id}")
+                        # Add to sent messages set
+                        self.sent_messages.add(media_key)
                         return {"success": True}
                     else:
                         error_msg = send_response.json() if send_response.content else "Unknown error"
@@ -479,13 +527,30 @@ def detect_platform(url: str) -> Optional[str]:
     return None
 
 def normalize_youtube_shorts_url(url: str) -> str:
-    """Convert YouTube Shorts URL to standard watch URL"""
+    """Convert YouTube Shorts URL to standard watch URL with proper ID extraction"""
     if 'youtube.com/shorts/' in url:
-        # Extract video ID from Shorts URL
-        match = re.search(r'youtube\.com/shorts/([^/?]+)', url)
+        # Extract video ID from Shorts URL - fix the truncation issue
+        match = re.search(r'youtube\.com/shorts/([^/?&#]+)', url)
         if match:
             video_id = match.group(1)
-            return f"https://www.youtube.com/watch?v={video_id}"
+            # Ensure we have a complete video ID (should be 11 characters)
+            if len(video_id) >= 11:
+                # Take only the first 11 characters to ensure proper ID
+                video_id = video_id[:11]
+                normalized_url = f"https://www.youtube.com/watch?v={video_id}"
+                logger.info(f"✅ Normalized YouTube Shorts URL: {url} -> {normalized_url}")
+                return normalized_url
+            else:
+                logger.warning(f"⚠️ Incomplete YouTube ID detected: {video_id}")
+                # Try to extract a longer ID if available
+                match_full = re.search(r'youtube\.com/shorts/([a-zA-Z0-9_-]+)', url)
+                if match_full:
+                    full_id = match_full.group(1)
+                    if len(full_id) >= 11:
+                        full_id = full_id[:11]
+                        normalized_url = f"https://www.youtube.com/watch?v={full_id}"
+                        logger.info(f"✅ Normalized YouTube Shorts URL (full ID): {url} -> {normalized_url}")
+                        return normalized_url
     return url
 
 def is_supported_url(url: str) -> bool:
@@ -1535,29 +1600,40 @@ async def send_media_file(recipient_id: str, file_path: str, title: str, content
         cleanup_file(file_path)
 
 async def send_instagram_media_group(recipient_id: str, media_data: Dict):
-    """Send Instagram media as a single grouped message"""
+    """Send Instagram media as a single grouped message with proper deduplication"""
     try:
         media_files = media_data['media_files']
         title = media_data['title']
         
-        # Track sent media to prevent duplicates
-        sent_media = set()
-        media_to_send = []
+        # Track sent media to prevent duplicates using file hashes
+        sent_media_hashes = set()
+        media_to_send: List[Dict] = []
         
         # First, collect all unique media files
         for i, media_file in enumerate(media_files[:5]):  # Limit to 5 media files
             file_path = media_file['path']
             media_type = media_file['type']
             
-            # Check if we've already processed this file
-            file_hash = hashlib.md5(open(file_path, 'rb').read()).hexdigest()
-            if file_hash in sent_media:
-                logger.debug(f"Skipping duplicate media: {file_path}")
+            # Skip if file doesn't exist
+            if not os.path.exists(file_path):
+                logger.debug(f"Skipping non-existent media: {file_path}")
                 continue
-            sent_media.add(file_hash)
+            
+            # Check if we've already processed this file using file hash
+            try:
+                with open(file_path, 'rb') as f:
+                    file_hash = hashlib.md5(f.read()).hexdigest()
+                if file_hash in sent_media_hashes:
+                    logger.debug(f"Skipping duplicate media: {file_path}")
+                    continue
+                sent_media_hashes.add(file_hash)
+            except Exception as e:
+                logger.warning(f"Could not hash file {file_path}: {e}")
+                # Continue anyway but with less reliable deduplication
             
             file_size = os.path.getsize(file_path)
             if file_size > MAX_FILE_SIZE:
+                logger.warning(f"Skipping large file: {file_path} ({file_size} bytes)")
                 continue
                 
             media_to_send.append({
@@ -1570,7 +1646,7 @@ async def send_instagram_media_group(recipient_id: str, media_data: Dict):
             messenger.send_message("❌ No valid media files to send", recipient_id)
             return
         
-        # Send all media files with a single introductory message
+        # Send all media files with a single introductory message for carousel posts
         if len(media_to_send) > 1:
             # For carousel posts, send a summary message first
             messenger.send_message(f"📸 Instagram Carousel: {title}\n\n✅ Sending {len(media_to_send)} media items...", recipient_id)
@@ -1625,13 +1701,21 @@ async def send_instagram_media_group(recipient_id: str, media_data: Dict):
 
 async def handle_link(recipient_id: str, url: str):
     """Handle incoming links with intelligent processing"""
-    # Normalize YouTube Shorts URLs
+    # Check if we've already processed this URL
+    url_key = f"{recipient_id}:{get_url_hash(url)}"
+    if url_key in processed_urls:
+        logger.info(f"Skipping duplicate URL for user {recipient_id}: {url}")
+        messenger.send_message("✅ This content has already been processed.", recipient_id)
+        return
+    
+    # Add to processed URLs
+    processed_urls.add(url_key)
+    
+    # Normalize YouTube Shorts URLs properly
     if 'youtube.com/shorts/' in url:
-        match = re.search(r'youtube\.com/shorts/([^/?]+)', url)
-        if match:
-            video_id = match.group(1)
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            logger.info(f"🔄 Normalized YouTube Shorts URL to: {url}")
+        normalized_url = normalize_youtube_shorts_url(url)
+        logger.info(f"🔄 Normalized YouTube Shorts URL: {url} -> {normalized_url}")
+        url = normalized_url
     
     if not url.startswith(('http://', 'https://')):
         messenger.send_message("❌ Invalid URL\n\nPlease send a valid link starting with http:// or https://", recipient_id)
