@@ -1839,9 +1839,9 @@ async def handle_link(recipient_id: str, url: str):
 async def download_and_send_spotify(recipient_id: str, spotify_metadata: Dict):
     """Handle Spotify download and send with proper filename"""
     try:
+        # Fix the function call - remove the filename parameter which doesn't exist
         file_path = await download_media(
             spotify_metadata['search_query'], 
-            filename=spotify_metadata['filename'],
             audio_only=True
         )
         
