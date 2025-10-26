@@ -11,6 +11,15 @@ import shutil
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 
+# Try to import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BeautifulSoup = None
+    BS4_AVAILABLE = False
+    print("Warning: BeautifulSoup not available. Spotify processing will be limited.")
+
 # Import heyoo for WhatsApp API
 try:
     from heyoo import WhatsApp
@@ -357,9 +366,213 @@ def process_message(recipient_id: str, text: str):
     # Default response for unrecognized messages
     messenger.send_message("💡 *Tip*\n\nSend a social media link to download content, or type *help* for more information!", recipient_id)
 
-# Add a simple cache to prevent duplicate processing
-processed_urls = set()
-last_cleanup_time = time.time()
+# Add cache for processed URLs to prevent duplicate processing
+processed_urls_cache = {}
+CACHE_DURATION = 3600  # 1 hour
+last_cleanup_time = time.time()  # Initialize the variable
+
+def is_url_processed(url: str) -> bool:
+    """Check if URL has been processed recently"""
+    current_time = time.time()
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    
+    # Clean up old cache entries
+    expired_keys = [k for k, v in processed_urls_cache.items() 
+                   if current_time - v.get('timestamp', 0) > CACHE_DURATION]
+    for key in expired_keys:
+        del processed_urls_cache[key]
+    
+    # Check if URL is in cache
+    if url_hash in processed_urls_cache:
+        return True
+    
+    return False
+
+def mark_url_as_processed(url: str, file_path: str = None):
+    """Mark URL as processed"""
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    processed_urls_cache[url_hash] = {
+        'timestamp': time.time(),
+        'file_path': file_path
+    }
+
+def get_processed_file_path(url: str) -> Optional[str]:
+    """Get file path for previously processed URL"""
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    if url_hash in processed_urls_cache:
+        return processed_urls_cache[url_hash].get('file_path')
+    return None
+
+def process_spotify_url(url: str) -> Optional[Dict]:
+    """Process Spotify URL and return a YouTube search query and filename"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        # Fetch page
+        response = requests.get(url, headers=headers, timeout=12)
+        if response.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        title_tag = soup.find('meta', property='og:title')
+        desc_tag = soup.find('meta', property='og:description')
+        
+        title_text = (title_tag.get('content') if title_tag else '') or ''
+        desc_text = (desc_tag.get('content') if desc_tag else '') or ''
+        
+        artist = ""
+        track_name = ""
+        search_query = None
+        filename = None
+        full_title = None
+        
+        # Helpers
+        def clean_text(text: str) -> str:
+            t = re.sub(r'\s*\(.*?\)\s*', '', text or '').strip()
+            t = re.sub(r'\s+', ' ', t)
+            return t
+        
+        # Track processing
+        if '/track/' in url.lower():
+            # Try title like "Track • Artist" or "Artist - Track"
+            if ' • ' in title_text:
+                track_name, artist = title_text.split(' • ', 1)
+            elif ' - ' in title_text:
+                temp_a, temp_t = title_text.split(' - ', 1)
+                # Often appears as "Artist - Track"
+                artist, track_name = temp_a, temp_t
+            else:
+                track_name = title_text
+            
+            # Fallback parse from JSON-LD
+            if (not artist or not track_name):
+                for script in soup.find_all('script', type='application/ld+json'):
+                    try:
+                        data = json.loads(script.string or '{}')
+                        if data.get('@type') == 'MusicRecording':
+                            track_name = track_name or data.get('name', '')
+                            by_artist = data.get('byArtist')
+                            if isinstance(by_artist, dict):
+                                artist = artist or by_artist.get('name', '')
+                            elif isinstance(by_artist, list) and by_artist:
+                                artist = artist or by_artist[0].get('name', '')
+                    except Exception:
+                        continue
+            
+            artist = clean_text(artist)
+            track_name = clean_text(track_name)
+            
+            if artist:
+                search_query = f"ytsearch1:{track_name} {artist}"
+                filename = f"{artist} - {track_name}"
+                full_title = filename
+            else:
+                search_query = f"ytsearch1:{track_name}"
+                filename = track_name or 'Spotify Track'
+                full_title = filename
+        
+        # For other Spotify content types, use generic search
+        else:
+            # Extract title for other Spotify content
+            title = clean_text(title_text or 'Spotify Content')
+            search_query = f"ytsearch1:{title}"
+            filename = title
+            full_title = title
+        
+        return {
+            'search_query': search_query,
+            'artist': artist or 'Unknown Artist',
+            'track_name': track_name or 'Unknown Track',
+            'filename': filename or 'Spotify Audio',
+            'full_title': full_title or filename or 'Spotify Audio'
+        }
+    
+    except Exception as e:
+        logger.error(f"Spotify processing error: {e}")
+        return None
+
+def download_media_with_filename(url: str, filename: str = None, audio_only: bool = False) -> Optional[str]:
+    """Download media with custom filename - simplified version for WhatsApp"""
+    try:
+        # Ensure temp directory exists
+        ensure_directories()
+        
+        # Create unique temporary directory for this download
+        download_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
+        os.makedirs(download_dir, exist_ok=True)
+        
+        # Use custom filename if provided
+        if filename:
+            # Sanitize filename for filesystem
+            safe_filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+            safe_filename = safe_filename.replace('..', '')[:100]  # Limit length
+            base_filename = safe_filename
+        else:
+            base_filename = f"{get_url_hash(url)[:8]}_{int(time.time())}"
+        
+        if audio_only:
+            output_template = os.path.join(download_dir, f"{base_filename}.%(ext)s")
+            ydl_opts = {
+                'format': 'bestaudio[ext=m4a]/bestaudio/best',
+                'outtmpl': output_template,
+                'extractaudio': True,
+                'audioformat': 'mp3',
+                'audioquality': '320K',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '320',
+                }],
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 20,
+            }
+        else:
+            output_template = os.path.join(download_dir, f"{base_filename}.%(ext)s")
+            ydl_opts = {
+                'format': 'best[height<=1080][ext=mp4]/best[ext=mp4]/best',
+                'outtmpl': output_template,
+                'quiet': True,
+                'no_warnings': True,
+                'merge_output_format': 'mp4',
+                'noplaylist': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 20,
+            }
+        
+        # Add cookies for specific platforms
+        if 'youtube.com' in url or 'youtu.be' in url:
+            cookies_file = "ytcookies.txt"
+            if os.path.exists(cookies_file):
+                ydl_opts['cookiefile'] = cookies_file
+                logger.info("🍪 Using YouTube cookies for authentication")
+        elif 'instagram.com' in url:
+            cookies_file = "cookies.txt"
+            if os.path.exists(cookies_file):
+                ydl_opts['cookiefile'] = cookies_file
+                logger.info("🍪 Using Instagram cookies for authentication")
+        
+        # Download
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        # Find downloaded file
+        for root, dirs, files in os.walk(download_dir):
+            for file in files:
+                if file.endswith(('.mp4', '.mov', '.avi', '.mkv', '.m4a', '.mp3', '.wav', '.flac')):
+                    return os.path.join(root, file)
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Download with filename failed: {e}")
+        return None
 
 def handle_link(recipient_id: str, url: str):
     """Handle incoming links with intelligent processing"""
@@ -370,16 +583,13 @@ def handle_link(recipient_id: str, url: str):
         messenger.send_message("❌ *Invalid URL*\n\nPlease send a valid link starting with http:// or https://", recipient_id)
         return
     
-    # Check if URL has already been processed
-    url_hash = hashlib.md5(url.encode()).hexdigest()
-    if url_hash in processed_urls:
-        messenger.send_message("🔄 *This link has already been processed*", recipient_id)
-        return
-    
-    # Clean up old processed URLs periodically (every 10 minutes)
+    # Clean up old processed URLs cache periodically (every 10 minutes)
     current_time = time.time()
     if current_time - last_cleanup_time > 600:  # 10 minutes
-        processed_urls.clear()
+        expired_keys = [k for k, v in processed_urls_cache.items() 
+                       if current_time - v.get('timestamp', 0) > CACHE_DURATION]
+        for key in expired_keys:
+            del processed_urls_cache[key]
         last_cleanup_time = current_time
     
     if not is_supported_url(url):
@@ -395,9 +605,6 @@ def handle_link(recipient_id: str, url: str):
     
     # Show processing message
     messenger.send_message(f"🔄 *Processing {platform.title()} link...*", recipient_id)
-    
-    # Add to processed URLs
-    processed_urls.add(url_hash)
     
     # Handle different platforms
     if platform == 'instagram_reel':
@@ -467,8 +674,23 @@ def handle_instagram_content(recipient_id: str, url: str):
         messenger.send_message(f"❌ *Failed to download Instagram content*\nError: {str(e)}", recipient_id)
 
 def handle_youtube_content(recipient_id: str, url: str):
-    """Handle YouTube content with proper cookie handling"""
+    """Handle YouTube content with proper cache handling"""
     try:
+        # Check if URL was processed recently
+        if is_url_processed(url):
+            # Try to get previously downloaded file
+            file_path = get_processed_file_path(url)
+            if file_path and os.path.exists(file_path):
+                # Send existing file
+                messenger.send_message("🔄 *Sending previously downloaded video...*", recipient_id)
+                result = messenger.send_document(file_path, recipient_id, "YouTube Video")
+                if not result.get('success', False):
+                    messenger.send_message(f"⚠️ *File downloaded but failed to send*\nError: {result.get('error', 'Unknown error')}", recipient_id)
+                return
+            else:
+                # URL was processed but file is gone, allow reprocessing
+                pass
+        
         messenger.send_message("📥 *Downloading YouTube content...*", recipient_id)
         
         # Ensure temp directory exists
@@ -486,7 +708,7 @@ def handle_youtube_content(recipient_id: str, url: str):
                 cookies_file = None
             
             ydl_opts = {
-                'format': 'best[ext=mp4]/best',
+                'format': 'best[height<=1080][ext=mp4]/best[ext=mp4]/best',
                 'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
                 'quiet': True,
                 'no_warnings': True,
@@ -500,7 +722,6 @@ def handle_youtube_content(recipient_id: str, url: str):
             # Add cookies if available
             if cookies_file and os.path.exists(cookies_file):
                 ydl_opts['cookiefile'] = cookies_file
-                logger.info("🍪 Using YouTube cookies for authentication")
             
             ydl = yt_dlp.YoutubeDL(ydl_opts)
             info = ydl.extract_info(url, download=False)
@@ -529,9 +750,13 @@ def handle_youtube_content(recipient_id: str, url: str):
                 file_size = os.path.getsize(video_file)
                 size_mb = file_size / (1024 * 1024)
                 messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
+                
+                # Mark URL as processed
+                mark_url_as_processed(url, video_file)
+                
                 result = messenger.send_document(video_file, recipient_id, f"YouTube Video • {title}")
                 
-                # Clean up after sending
+                # Clean up file but keep reference for cache
                 try:
                     os.remove(video_file)
                     os.rmdir(download_dir)
@@ -583,89 +808,79 @@ def handle_facebook_content(recipient_id: str, url: str):
         messenger.send_message(f"❌ *Failed to download Facebook content*\nError: {str(e)}", recipient_id)
 
 def handle_spotify_content(recipient_id: str, url: str):
-    """Handle Spotify content with proper DRM handling"""
+    """Handle Spotify content by searching on YouTube"""
     try:
-        messenger.send_message("📥 *Downloading Spotify content...*", recipient_id)
-        
-        # For Spotify, we'll try to download audio
-        if YTDLP_AVAILABLE and yt_dlp is not None:
-            # Create unique temporary directory for this download
-            download_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
-            os.makedirs(download_dir, exist_ok=True)
-            
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
-                'quiet': True,
-                'no_warnings': True,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'noplaylist': True,
-                'retries': 2,
-                'fragment_retries': 2,
-                'socket_timeout': 20,
-            }
-            
-            ydl = yt_dlp.YoutubeDL(ydl_opts)
-            # Extract info first
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Spotify Audio')
-            uploader = info.get('uploader', 'Unknown') if info.get('uploader') else info.get('artist', 'Unknown')
-            
-            # Send info message
-            info_message = f"🎵 *{title}*\n👤 *Artist: {uploader}*"
-            messenger.send_message(info_message, recipient_id)
-            
-            # Download the content
-            messenger.send_message("⬇️ *Downloading audio file...*", recipient_id)
-            ydl.download([url])
-            
-            # Find downloaded file
-            audio_file = None
-            for root, dirs, files in os.walk(download_dir):
-                for file in files:
-                    if file.endswith(('.mp3', '.m4a', '.wav', '.flac')):
-                        audio_file = os.path.join(root, file)
-                        break
-                if audio_file:
-                    break
-            
-            if audio_file and os.path.exists(audio_file):
-                file_size = os.path.getsize(audio_file)
-                size_mb = file_size / (1024 * 1024)
-                messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
-                result = messenger.send_document(audio_file, recipient_id, f"Audio • {title}")
-                # Clean up after sending
+        # Check if URL was processed recently
+        if is_url_processed(url):
+            # Try to get previously downloaded file
+            file_path = get_processed_file_path(url)
+            if file_path and os.path.exists(file_path):
+                # Send existing file
+                title = "Spotify Track"
                 try:
-                    os.remove(audio_file)
-                    os.rmdir(download_dir)
+                    # Try to extract title from filename
+                    filename = os.path.basename(file_path)
+                    if ' - ' in filename:
+                        title = filename.replace('.mp3', '').replace('.m4a', '')
                 except:
                     pass
-                    
-                # Check if sending was successful
+                messenger.send_message(f"🔄 *Sending previously downloaded file...*", recipient_id)
+                result = messenger.send_document(file_path, recipient_id, f"🎵 {title}")
                 if not result.get('success', False):
                     messenger.send_message(f"⚠️ *File downloaded but failed to send*\nError: {result.get('error', 'Unknown error')}", recipient_id)
+                return
             else:
-                # Try to get a preview URL if full download failed
-                preview_url = info.get('url') or info.get('webpage_url')
-                if preview_url and 'preview' in preview_url:
-                    # Send a message with the preview URL
-                    messenger.send_message(f"🎵 *{title}*\n👤 *Artist: {uploader}*\n\n⚠️ Full audio download not available. You can listen to a preview here:\n{preview_url}", recipient_id)
-                else:
-                    messenger.send_message("❌ *Download failed - No audio file found*", recipient_id)
+                # URL was processed but file is gone, allow reprocessing
+                pass
+        
+        messenger.send_message("📥 *Processing Spotify content...*", recipient_id)
+        
+        # Process Spotify URL to get metadata
+        spotify_metadata = process_spotify_url(url)
+        if not spotify_metadata:
+            messenger.send_message("❌ *Failed to process Spotify URL*", recipient_id)
+            return
+        
+        # Send info message
+        info_message = f"🎵 *{spotify_metadata['full_title']}*\n\n🔄 *Searching on YouTube...*"
+        messenger.send_message(info_message, recipient_id)
+        
+        # Download from YouTube using search query
+        file_path = download_media_with_filename(
+            spotify_metadata['search_query'],
+            filename=spotify_metadata['filename'],
+            audio_only=True
+        )
+        
+        if file_path and os.path.exists(file_path):
+            file_size = os.path.getsize(file_path)
+            size_mb = file_size / (1024 * 1024)
+            messenger.send_message(f"✅ *Successfully downloaded!* Size: {size_mb:.1f}MB", recipient_id)
+            
+            # Mark URL as processed
+            mark_url_as_processed(url, file_path)
+            
+            # Send the file
+            result = messenger.send_document(file_path, recipient_id, f"🎵 {spotify_metadata['full_title']}")
+            
+            # Clean up file but keep reference for cache
+            try:
+                os.remove(file_path)
+                file_dir = os.path.dirname(file_path)
+                if os.path.exists(file_dir) and not os.listdir(file_dir):
+                    os.rmdir(file_dir)
+            except:
+                pass
+                
+            # Check if sending was successful
+            if not result.get('success', False):
+                messenger.send_message(f"⚠️ *File downloaded but failed to send*\nError: {result.get('error', 'Unknown error')}", recipient_id)
         else:
-            messenger.send_message("❌ *Media download not available*", recipient_id)
+            messenger.send_message("❌ *Download failed*", recipient_id)
             
     except Exception as e:
         logger.error(f"Spotify content handling failed: {e}")
-        error_msg = str(e).lower()
-        if "drm" in error_msg:
-            messenger.send_message("❌ *Spotify content is DRM protected and cannot be downloaded*", recipient_id)
-        else:
-            messenger.send_message(f"❌ *Failed to download Spotify content*\nError: {str(e)}", recipient_id)
+        messenger.send_message(f"❌ *Failed to process Spotify content*\nError: {str(e)}", recipient_id)
 
 def handle_twitter_content(recipient_id: str, url: str):
     """Handle Twitter/X content"""
@@ -677,8 +892,23 @@ def handle_twitter_content(recipient_id: str, url: str):
         messenger.send_message(f"❌ *Failed to download Twitter content*\nError: {str(e)}", recipient_id)
 
 def handle_generic_content(recipient_id: str, url: str):
-    """Handle generic content download with proper error handling"""
+    """Handle generic content download with cache and better error handling"""
     try:
+        # Check if URL was processed recently
+        if is_url_processed(url):
+            # Try to get previously downloaded file
+            file_path = get_processed_file_path(url)
+            if file_path and os.path.exists(file_path):
+                # Send existing file
+                messenger.send_message("🔄 *Sending previously downloaded content...*", recipient_id)
+                result = messenger.send_document(file_path, recipient_id, "Media Content")
+                if not result.get('success', False):
+                    messenger.send_message(f"⚠️ *File downloaded but failed to send*\nError: {result.get('error', 'Unknown error')}", recipient_id)
+                return
+            else:
+                # URL was processed but file is gone, allow reprocessing
+                pass
+        
         # Use yt-dlp for generic content download
         if YTDLP_AVAILABLE and yt_dlp is not None:
             # Ensure temp directory exists
@@ -700,7 +930,7 @@ def handle_generic_content(recipient_id: str, url: str):
                 cookies_file = None
             
             ydl_opts = {
-                'format': 'best[ext=mp4]/best/bestvideo*+bestaudio/best',
+                'format': 'best[height<=1080][ext=mp4]/best[ext=mp4]/best/bestvideo*+bestaudio/best',
                 'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
                 'quiet': True,
                 'no_warnings': True,
@@ -752,11 +982,14 @@ def handle_generic_content(recipient_id: str, url: str):
                     caption = f"Audio • {title}"
                 else:
                     caption = f"Media • {title}"
-                    
+                
+                # Mark URL as processed
+                mark_url_as_processed(url, downloaded_file)
+                
                 # Send the actual file
                 result = messenger.send_document(downloaded_file, recipient_id, caption)
                 
-                # Clean up after sending
+                # Clean up file but keep reference for cache
                 try:
                     os.remove(downloaded_file)
                     os.rmdir(download_dir)
@@ -778,6 +1011,8 @@ def handle_generic_content(recipient_id: str, url: str):
             messenger.send_message("❌ *Content is DRM protected and cannot be downloaded*", recipient_id)
         elif "private" in error_msg or "unavailable" in error_msg:
             messenger.send_message("❌ *Content is private or unavailable*", recipient_id)
+        elif "404" in error_msg:
+            messenger.send_message("❌ *Content not found (404 error)*\nThis might be a temporary issue or the content may have been removed.", recipient_id)
         else:
             messenger.send_message(f"❌ *Failed to download content*\nError: {str(e)}", recipient_id)
 
