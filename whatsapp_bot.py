@@ -460,6 +460,12 @@ def detect_platform(url: str) -> Optional[str]:
     url_lower = url.lower()
     logger.debug(f"🔍 Platform detection for URL: {url}")
     
+    # Handle YouTube Shorts by converting to standard YouTube URL
+    if 'youtube.com/shorts/' in url_lower:
+        logger.info(f"🔄 Converting YouTube Shorts URL to standard format: {url}")
+        return 'youtube'
+    
+    # Treat yt-dlp search queries (ytsearch, ytsearch1, etc.) as YouTube
     if url_lower.startswith('ytsearch'):
         logger.info(f"🎯 Detected platform: youtube for URL: {url}")
         return 'youtube'
@@ -595,9 +601,12 @@ async def download_media(url: str, quality: str = None, audio_only: bool = False
                 'no_warnings': True,
                 'noplaylist': True
             }
+            # Use YouTube cookies if available for audio downloads (especially for Spotify conversions)
             try:
-                if platform == 'youtube' and os.path.exists(YOUTUBE_COOKIES_FILE):
-                    ydl_opts['cookiefile'] = YOUTUBE_COOKIES_FILE
+                if platform == 'youtube' or audio_only:
+                    if os.path.exists(YOUTUBE_COOKIES_FILE):
+                        ydl_opts['cookiefile'] = YOUTUBE_COOKIES_FILE
+                        logger.info("🍪 Using YouTube cookies for audio download")
             except Exception:
                 pass
         else:
@@ -1485,9 +1494,19 @@ async def send_instagram_media_group(recipient_id: str, media_data: Dict):
         media_files = media_data['media_files']
         title = media_data['title']
         
-        for i, media_file in enumerate(media_files[:5]):
+        # Track sent media to prevent duplicates
+        sent_media = set()
+        
+        for i, media_file in enumerate(media_files[:5]):  # Limit to 5 media files
             file_path = media_file['path']
             media_type = media_file['type']
+            
+            # Check if we've already sent this file
+            file_hash = hashlib.md5(open(file_path, 'rb').read()).hexdigest()
+            if file_hash in sent_media:
+                logger.debug(f"Skipping duplicate media: {file_path}")
+                continue
+            sent_media.add(file_hash)
             
             file_size = os.path.getsize(file_path)
             if file_size > MAX_FILE_SIZE:
@@ -1495,7 +1514,11 @@ async def send_instagram_media_group(recipient_id: str, media_data: Dict):
             
             try:
                 size_mb = file_size / (1024 * 1024)
-                caption = f"📷 {title} (Part {i+1})\n\n✅ Instagram {media_type.title()} • {size_mb:.1f}MB" if i == 0 else f"Part {i+1}"
+                # For the first item, use the full title; for others, add part indicator
+                if i == 0:
+                    caption = f"📷 {title}\n\n✅ Instagram {media_type.title()} • {size_mb:.1f}MB"
+                else:
+                    caption = f"📷 {title} (Part {i+1})\n\n✅ Instagram {media_type.title()} • {size_mb:.11f}MB"
                 
                 if media_type == 'image':
                     result = messenger.send_media(
@@ -1514,7 +1537,10 @@ async def send_instagram_media_group(recipient_id: str, media_data: Dict):
                     
                 if not result.get('success'):
                     logger.error(f"Failed to send Instagram media {i}: {result.get('error', 'Unknown error')}")
+                else:
+                    logger.info(f"Successfully sent Instagram media {i}: {file_path}")
                 
+                # Add a small delay between sends to prevent rate limiting
                 await asyncio.sleep(1)
                 
             except Exception as e:
@@ -1564,6 +1590,9 @@ async def handle_link(recipient_id: str, url: str):
         if platform == 'instagram':
             messenger.send_message("📷 Processing Instagram content...", recipient_id)
             
+            # Track if we've already processed this Instagram content to prevent duplicate sends
+            processed_content = False
+            
             url_lower = url.lower()
             is_video_link = '/reel/' in url_lower or '/reels/' in url_lower
             is_post_link = '/p/' in url_lower
@@ -1596,35 +1625,41 @@ async def handle_link(recipient_id: str, url: str):
                                 file_path = await download_media(url, None, False, {'platform': 'instagram'})
                                 if file_path:
                                     await send_media_file(recipient_id, file_path, info.get('title', 'Instagram Video'), 'video')
+                                    processed_content = True
                                 else:
                                     raise Exception("yt-dlp download failed")
                                 return
                                 
                         except Exception as e:
                             logger.debug(f"Instagram video link processing error: {e}")
-                            messenger.send_message("🔄 Trying alternative download method...", recipient_id)
+                            if not processed_content:
+                                messenger.send_message("🔄 Trying alternative download method...", recipient_id)
                             
                             try:
                                 file_path = await download_media(url, None, False, {'platform': 'instagram'})
                                 if file_path:
                                     await send_media_file(recipient_id, file_path, 'Instagram Video', 'video')
-                                    return
+                                    processed_content = True
                                 else:
                                     raise Exception("yt-dlp direct download failed")
+                                return
                             except Exception as fallback_error:
                                 logger.debug(f"Instagram yt-dlp fallback failed: {fallback_error}")
                                 
-                                try:
-                                    messenger.send_message("🔄 Trying alternative download method...", recipient_id)
-                                    instagram_data = await download_instagram_media(url)
-                                    if instagram_data:
-                                        await send_instagram_media_group(recipient_id, instagram_data)
-                                    else:
-                                        messenger.send_message("❌ Could not download Instagram video\n\nThe content might be private or deleted.", recipient_id)
-                                except Exception as final_error:
-                                    logger.debug(f"Instagram instaloader fallback failed: {final_error}")
-                                    messenger.send_message("❌ Instagram download failed\n\nThe content might be private or deleted.", recipient_id)
-                            return
+                                if not processed_content:
+                                    try:
+                                        messenger.send_message("🔄 Trying alternative download method...", recipient_id)
+                                        instagram_data = await download_instagram_media(url)
+                                        if instagram_data:
+                                            await send_instagram_media_group(recipient_id, instagram_data)
+                                            processed_content = True
+                                        else:
+                                            messenger.send_message("❌ Could not download Instagram video\n\nThe content might be private or deleted.", recipient_id)
+                                    except Exception as final_error:
+                                        logger.debug(f"Instagram instaloader fallback failed: {final_error}")
+                                        if not processed_content:
+                                            messenger.send_message("❌ Instagram download failed\n\nThe content might be private or deleted.", recipient_id)
+                                return
                     else:
                         try:
                             base_opts = {
@@ -1653,6 +1688,7 @@ async def handle_link(recipient_id: str, url: str):
                                     file_path = await download_media(url, None, False, {'platform': 'instagram'})
                                     if file_path:
                                         await send_media_file(recipient_id, file_path, info.get('title', 'Instagram Video'), 'video')
+                                        processed_content = True
                                     else:
                                         raise Exception("yt-dlp download failed")
                                     return
@@ -1661,6 +1697,7 @@ async def handle_link(recipient_id: str, url: str):
                                     file_path = await download_media(url, None, False, {'platform': 'instagram', 'silent': True})
                                     if file_path:
                                         await send_media_file(recipient_id, file_path, info.get('title', 'Instagram Image'), 'image')
+                                        processed_content = True
                                     else:
                                         raise Exception("yt-dlp download failed")
                                     return
@@ -1669,31 +1706,38 @@ async def handle_link(recipient_id: str, url: str):
                             error_str = str(e).lower()
                             logger.debug(f"Instagram yt-dlp processing error: {e}")
                             
-                            try:
-                                instagram_data = await download_instagram_media(url)
-                                if instagram_data:
-                                    await send_instagram_media_group(recipient_id, instagram_data)
-                                else:
-                                    try:
-                                        file_path = await download_media(url, None, False, {'platform': 'instagram', 'no_auth': True})
-                                        if file_path:
-                                            await send_media_file(recipient_id, file_path, 'Instagram Content', 'mixed')
-                                        else:
-                                            messenger.send_message("❌ Could not download Instagram content\n\nThe content might be private or deleted.", recipient_id)
-                                    except Exception as final_error:
-                                        logger.debug(f"Instagram final fallback error: {final_error}")
-                                        messenger.send_message("❌ Could not download Instagram content\n\nThe content might be private or deleted.", recipient_id)
-                            except Exception as fallback_error:
-                                logger.debug(f"Instagram instaloader fallback error: {fallback_error}")
+                            if not processed_content:
                                 try:
-                                    file_path = await download_media(url, None, False, {'platform': 'instagram', 'no_auth': True})
-                                    if file_path:
-                                        await send_media_file(recipient_id, file_path, 'Instagram Content', 'mixed')
+                                    instagram_data = await download_instagram_media(url)
+                                    if instagram_data:
+                                        await send_instagram_media_group(recipient_id, instagram_data)
+                                        processed_content = True
                                     else:
-                                        messenger.send_message("❌ Instagram download failed\n\nThe content might be private or deleted.", recipient_id)
-                                except Exception as final_error:
-                                    logger.debug(f"Instagram final fallback error: {final_error}")
-                                    messenger.send_message("❌ Instagram download failed\n\nThe content might be private or deleted.", recipient_id)
+                                        try:
+                                            file_path = await download_media(url, None, False, {'platform': 'instagram', 'no_auth': True})
+                                            if file_path:
+                                                await send_media_file(recipient_id, file_path, 'Instagram Content', 'mixed')
+                                                processed_content = True
+                                            else:
+                                                messenger.send_message("❌ Could not download Instagram content\n\nThe content might be private or deleted.", recipient_id)
+                                        except Exception as final_error:
+                                            logger.debug(f"Instagram final fallback error: {final_error}")
+                                            if not processed_content:
+                                                messenger.send_message("❌ Could not download Instagram content\n\nThe content might be private or deleted.", recipient_id)
+                                except Exception as fallback_error:
+                                    logger.debug(f"Instagram instaloader fallback error: {fallback_error}")
+                                    if not processed_content:
+                                        try:
+                                            file_path = await download_media(url, None, False, {'platform': 'instagram', 'no_auth': True})
+                                            if file_path:
+                                                await send_media_file(recipient_id, file_path, 'Instagram Content', 'mixed')
+                                                processed_content = True
+                                            else:
+                                                messenger.send_message("❌ Instagram download failed\n\nThe content might be private or deleted.", recipient_id)
+                                        except Exception as final_error:
+                                            logger.debug(f"Instagram final fallback error: {final_error}")
+                                            if not processed_content:
+                                                messenger.send_message("❌ Instagram download failed\n\nThe content might be private or deleted.", recipient_id)
                             return
                 except Exception as detection_error:
                     logger.debug(f"Post type detection failed, continuing with normal flow: {detection_error}")
