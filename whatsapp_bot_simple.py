@@ -299,14 +299,21 @@ def download_instagram_reel_with_ytdlp(url: str) -> str:
         temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
         
         # yt-dlp options for downloading - handle both videos and images
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best/bestvideo+bestaudio/best',
-            'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-            'merge_output_format': 'mp4',
-            'noplaylist': True,
-            'extractor_args': {'instagram': {'api': 'mobile'}},  # Use mobile API for better compatibility
+        ydl_opts: Dict[str, Any] = {
+            "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
+            "quiet": True,
+            "skip_download": False,
+            "noplaylist": True,
+            "extract_flat": False,
+            "format": "bestvideo+bestaudio/best",
+            "postprocessors": [],
+            "extractor_args": {
+                "instagram": {
+                    "reel": ["1"],
+                    "stories": ["1"],
+                    "post": ["1"],  # Ensure posts are processed
+                }
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -321,11 +328,12 @@ def download_instagram_reel_with_ytdlp(url: str) -> str:
             
             if not video_file:
                 # Try any file if specific extensions don't work
-                for file in os.listdir(temp_dir):
-                    file_path = os.path.join(temp_dir, file)
-                    if os.path.isfile(file_path):
-                        video_file = file_path
-                        break
+                media_files = [
+                    f for f in os.listdir(temp_dir)
+                    if f.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".jpg", ".jpeg", ".png", ".webp"))
+                ]
+                if media_files:
+                    video_file = os.path.join(temp_dir, media_files[0])
             
             if not video_file:
                 raise Exception("No media file found after download")
@@ -402,13 +410,20 @@ def download_instagram_post_with_ytdlp(url: str) -> List[str]:
         
         # yt-dlp options for downloading - handle both videos and images
         ydl_opts: Dict[str, Any] = {
-            'format': 'best[ext=mp4]/best/bestvideo+bestaudio/best',  # Prioritize mp4, but accept other formats
-            'outtmpl': os.path.join(temp_dir, '%(id)s_%(media_index)d.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-            'merge_output_format': 'mp4',
-            'noplaylist': True,
-            'extractor_args': {'instagram': {'api': 'mobile'}},  # Use mobile API for better compatibility
+            "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
+            "quiet": True,
+            "skip_download": False,
+            "noplaylist": True,
+            "extract_flat": False,
+            "format": "bestvideo+bestaudio/best",
+            "postprocessors": [],
+            "extractor_args": {
+                "instagram": {
+                    "reel": ["1"],
+                    "stories": ["1"],
+                    "post": ["1"],  # Ensure posts are processed
+                }
+            }
         }
         
         downloaded_files: List[str] = []
@@ -450,13 +465,16 @@ def download_instagram_post_with_ytdlp(url: str) -> List[str]:
                         downloaded_files.append(file_path)
                         break
         
-        # If no files found, try a more generic approach
+        # If no files found with specific extensions, try a more generic approach
         if not downloaded_files:
-            for file in os.listdir(temp_dir):
-                file_path = os.path.join(temp_dir, file)
-                if os.path.isfile(file_path):
-                    downloaded_files.append(file_path)
+            media_files = [
+                f for f in os.listdir(temp_dir)
+                if f.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".jpg", ".jpeg", ".png", ".webp"))
+            ]
+            for file in media_files:
+                downloaded_files.append(os.path.join(temp_dir, file))
         
+        # Final check for media files
         if not downloaded_files:
             raise Exception("No media files found after download")
         
@@ -598,11 +616,17 @@ def handle_instagram_post(recipient_id: str, url: str):
             messenger.send_message(f"✅ *Successfully downloaded!* Total Size: {size_mb:.1f}MB", recipient_id)
             
             # Send all files
-            if is_carousel:
+            if is_carousel and len(file_paths) > 1:
                 messenger.send_message(f"📤 *Sending {len(file_paths)} media files as a group...*", recipient_id)
-            
-            for i, file_path in enumerate(file_paths):
-                caption = f"Instagram Post ({i+1}/{len(file_paths)})" if is_carousel and len(file_paths) > 1 else "Instagram Post"
+                
+                # Send carousel files with sequential numbering
+                for index, file_path in enumerate(sorted(file_paths)):
+                    caption = f"Instagram Post ({index+1}/{len(file_paths)})"
+                    messenger.send_document(file_path, recipient_id, f"{caption} • {os.path.basename(file_path)}")
+            else:
+                # Send single file
+                file_path = file_paths[0]
+                caption = "Instagram Post"
                 messenger.send_document(file_path, recipient_id, f"{caption} • {os.path.basename(file_path)}")
         else:
             messenger.send_message("❌ *Download failed*", recipient_id)
