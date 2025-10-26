@@ -551,7 +551,7 @@ def handle_link(recipient_id: str, url: str):
     
     # Basic URL validation
     if not url.startswith(('http://', 'https://')):
-        messenger.send_message("Invalid URL. Please send a valid link starting with http:// or https://", recipient_id)
+        messenger.send_message("Invalid URL\n\nPlease send a valid link starting with http:// or https://", recipient_id)
         return
     
     # Clean up old processed URLs cache periodically (every 10 minutes)
@@ -565,7 +565,7 @@ def handle_link(recipient_id: str, url: str):
     
     if not is_supported_url(url):
         messenger.send_message(
-            "Unsupported Platform. Supported platforms: YouTube, Instagram, TikTok, Spotify, Twitter/X, Facebook",
+            "Unsupported Platform\n\nSupported platforms:\n YouTube\n Instagram\n TikTok\n Spotify\n Twitter/X\n Facebook",
             recipient_id
         )
         return
@@ -594,7 +594,7 @@ def handle_link(recipient_id: str, url: str):
         handle_twitter_content(recipient_id, url)
     else:
         # For other content, send a generic response
-        messenger.send_message(f"Processing {platform.title()} content... This may take a few moments.", recipient_id)
+        messenger.send_message(f"Processing {platform.title()} content...\nThis may take a few moments.", recipient_id)
         handle_generic_content(recipient_id, url)
 
 def handle_instagram_reel(recipient_id: str, url: str):
@@ -609,7 +609,7 @@ def handle_instagram_reel(recipient_id: str, url: str):
         creator = reel_info['creator']
         
         # Send info message with real title and creator
-        info_message = f"Instagram Reel: {title}. Creator: {creator}"
+        info_message = f"Instagram Reel: {title}\nCreator: {creator}"
         messenger.send_message(info_message, recipient_id)
         
         # Download the reel using yt-dlp
@@ -623,7 +623,7 @@ def handle_instagram_reel(recipient_id: str, url: str):
             messenger.send_message(f"Successfully downloaded! Size: {size_mb:.1f}MB", recipient_id)
             
             # Send the actual file
-            result = messenger.send_document(file_path, recipient_id, f"Instagram Reel - {title}")
+            result = messenger.send_document(file_path, recipient_id, f"Instagram Reel  {title}")
             
             # Clean up file
             try:
@@ -634,13 +634,13 @@ def handle_instagram_reel(recipient_id: str, url: str):
                 
             # Check if sending was successful
             if not result.get('success', False):
-                messenger.send_message(f"File downloaded but failed to send. Error: {result.get('error', 'Unknown error')}", recipient_id)
+                messenger.send_message(f"File downloaded but failed to send\nError: {result.get('error', 'Unknown error')}", recipient_id)
         else:
             messenger.send_message("Download failed", recipient_id)
         
     except Exception as e:
         logger.error(f"Instagram reel handling failed: {e}")
-        messenger.send_message(f"Failed to download Instagram reel. Error: {str(e)}", recipient_id)
+        messenger.send_message(f"Failed to download Instagram reel\nError: {str(e)}", recipient_id)
 
 def handle_instagram_content(recipient_id: str, url: str):
     """Handle Instagram content (posts, stories, etc.)"""
@@ -653,7 +653,7 @@ def handle_instagram_content(recipient_id: str, url: str):
         
     except Exception as e:
         logger.error(f"Instagram content handling failed: {e}")
-        messenger.send_message(f"Failed to download Instagram content. Error: {str(e)}", recipient_id)
+        messenger.send_message(f"Failed to download Instagram content\nError: {str(e)}", recipient_id)
 
 def handle_youtube_content(recipient_id: str, url: str):
     """Handle YouTube content with proper cache handling and error management"""
@@ -667,7 +667,7 @@ def handle_youtube_content(recipient_id: str, url: str):
                 messenger.send_message("Sending previously downloaded video...", recipient_id)
                 result = messenger.send_document(file_path, recipient_id, "YouTube Video")
                 if not result.get('success', False):
-                    messenger.send_message(f"File downloaded but failed to send. Error: {result.get('error', 'Unknown error')}", recipient_id)
+                    messenger.send_message(f"File downloaded but failed to send\nError: {result.get('error', 'Unknown error')}", recipient_id)
                 return
             else:
                 # URL was processed but file is gone, allow reprocessing
@@ -713,7 +713,7 @@ def handle_youtube_content(recipient_id: str, url: str):
             uploader = info.get('uploader', 'Unknown')
             
             # Send info message
-            info_message = f"YouTube Video: {title}. Uploader: {uploader}"
+            info_message = f"YouTube Video: {title}\nUploader: {uploader}"
             messenger.send_message(info_message, recipient_id)
             
             # Download the content
@@ -735,7 +735,7 @@ def handle_youtube_content(recipient_id: str, url: str):
             # Mark URL as processed
             mark_url_as_processed(url, video_file)
             
-            result = messenger.send_document(video_file, recipient_id, f"YouTube Video - {title}")
+            result = messenger.send_document(video_file, recipient_id, f"YouTube Video  {title}")
             
             # Clean up file
             try:
@@ -745,7 +745,7 @@ def handle_youtube_content(recipient_id: str, url: str):
                 
             # Check if sending was successful
             if not result.get('success', False):
-                messenger.send_message(f"File downloaded but failed to send. Error: {result.get('error', 'Unknown error')}", recipient_id)
+                messenger.send_message(f"File downloaded but failed to send\nError: {result.get('error', 'Unknown error')}", recipient_id)
         else:
             messenger.send_message("Download failed - No video file found", recipient_id)
             
@@ -753,11 +753,11 @@ def handle_youtube_content(recipient_id: str, url: str):
         logger.error(f"YouTube content handling failed: {e}")
         error_msg = str(e).lower()
         if "sign in to confirm you're not a bot" in error_msg or "403" in error_msg:
-            messenger.send_message("YouTube authentication required. Please update your YouTube cookies file.", recipient_id)
+            messenger.send_message("YouTube authentication required\nPlease update your YouTube cookies file.", recipient_id)
         elif "404" in error_msg:
-            messenger.send_message("YouTube video not found. The video may have been removed or the URL is incorrect.", recipient_id)
+            messenger.send_message("YouTube video not found\nThe video may have been removed or the URL is incorrect.", recipient_id)
         else:
-            messenger.send_message(f"Failed to download YouTube content. Error: {str(e)}", recipient_id)
+            messenger.send_message(f"Failed to download YouTube content\nError: {str(e)}", recipient_id)
 
 def handle_tiktok_content(recipient_id: str, url: str):
     """Handle TikTok content with proper URL resolution"""
@@ -772,7 +772,7 @@ def handle_tiktok_content(recipient_id: str, url: str):
         handle_generic_content(recipient_id, url)
     except Exception as e:
         logger.error(f"TikTok content handling failed: {e}")
-        messenger.send_message(f"Failed to download TikTok content. Error: {str(e)}", recipient_id)
+        messenger.send_message(f"Failed to download TikTok content\nError: {str(e)}", recipient_id)
 
 def handle_facebook_content(recipient_id: str, url: str):
     """Handle Facebook content"""
@@ -781,7 +781,7 @@ def handle_facebook_content(recipient_id: str, url: str):
         handle_generic_content(recipient_id, url)
     except Exception as e:
         logger.error(f"Facebook content handling failed: {e}")
-        messenger.send_message(f"Failed to download Facebook content. Error: {str(e)}", recipient_id)
+        messenger.send_message(f"Failed to download Facebook content\nError: {str(e)}", recipient_id)
 
 def handle_spotify_content(recipient_id: str, url: str):
     """Handle Spotify content by searching on YouTube"""
@@ -801,9 +801,9 @@ def handle_spotify_content(recipient_id: str, url: str):
                 except:
                     pass
                 messenger.send_message(f"Sending previously downloaded file...", recipient_id)
-                result = messenger.send_document(file_path, recipient_id, f"Spotify Track - {title}")
+                result = messenger.send_document(file_path, recipient_id, f"Spotify Track  {title}")
                 if not result.get('success', False):
-                    messenger.send_message(f"File downloaded but failed to send. Error: {result.get('error', 'Unknown error')}", recipient_id)
+                    messenger.send_message(f"File downloaded but failed to send\nError: {result.get('error', 'Unknown error')}", recipient_id)
                 return
             else:
                 # URL was processed but file is gone, allow reprocessing
@@ -818,7 +818,7 @@ def handle_spotify_content(recipient_id: str, url: str):
             return
         
         # Send info message
-        info_message = f"Spotify Track: {spotify_metadata['full_title']}. Searching on YouTube..."
+        info_message = f"Spotify Track: {spotify_metadata['full_title']}\n\nSearching on YouTube..."
         messenger.send_message(info_message, recipient_id)
         
         # Download from YouTube using search query
@@ -837,7 +837,7 @@ def handle_spotify_content(recipient_id: str, url: str):
             mark_url_as_processed(url, file_path)
             
             # Send the file
-            result = messenger.send_document(file_path, recipient_id, f"Spotify Track - {spotify_metadata['full_title']}")
+            result = messenger.send_document(file_path, recipient_id, f"Spotify Track  {spotify_metadata['full_title']}")
             
             # Clean up file
             try:
@@ -847,13 +847,13 @@ def handle_spotify_content(recipient_id: str, url: str):
                 
             # Check if sending was successful
             if not result.get('success', False):
-                messenger.send_message(f"File downloaded but failed to send. Error: {result.get('error', 'Unknown error')}", recipient_id)
+                messenger.send_message(f"File downloaded but failed to send\nError: {result.get('error', 'Unknown error')}", recipient_id)
         else:
             messenger.send_message("Download failed", recipient_id)
             
     except Exception as e:
         logger.error(f"Spotify content handling failed: {e}")
-        messenger.send_message(f"Failed to process Spotify content. Error: {str(e)}", recipient_id)
+        messenger.send_message(f"Failed to process Spotify content\nError: {str(e)}", recipient_id)
 
 def handle_twitter_content(recipient_id: str, url: str):
     """Handle Twitter/X content"""
@@ -862,7 +862,7 @@ def handle_twitter_content(recipient_id: str, url: str):
         handle_generic_content(recipient_id, url)
     except Exception as e:
         logger.error(f"Twitter content handling failed: {e}")
-        messenger.send_message(f"Failed to download Twitter content. Error: {str(e)}", recipient_id)
+        messenger.send_message(f"Failed to download Twitter content\nError: {str(e)}", recipient_id)
 
 def handle_generic_content(recipient_id: str, url: str):
     """Handle generic content download with cache and better error handling"""
@@ -876,7 +876,7 @@ def handle_generic_content(recipient_id: str, url: str):
                 messenger.send_message("Sending previously downloaded content...", recipient_id)
                 result = messenger.send_document(file_path, recipient_id, "Media Content")
                 if not result.get('success', False):
-                    messenger.send_message(f"File downloaded but failed to send. Error: {result.get('error', 'Unknown error')}", recipient_id)
+                    messenger.send_message(f"File downloaded but failed to send\nError: {result.get('error', 'Unknown error')}", recipient_id)
                 return
             else:
                 # URL was processed but file is gone, allow reprocessing
@@ -926,7 +926,7 @@ def handle_generic_content(recipient_id: str, url: str):
                 uploader = info.get('uploader', 'Unknown') if info.get('uploader') else info.get('uploader_id', 'Unknown')
                 
                 # Send info message
-                info_message = f"Video: {title}. Uploader: {uploader}"
+                info_message = f"Video: {title}\nUploader: {uploader}"
                 messenger.send_message(info_message, recipient_id)
                 
                 # Download the content
@@ -950,11 +950,11 @@ def handle_generic_content(recipient_id: str, url: str):
                 
                 # Determine caption based on file type
                 if downloaded_file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
-                    caption = f"Video - {title}"
+                    caption = f"Video  {title}"
                 elif downloaded_file.endswith(('.m4a', '.mp3', '.wav', '.flac')):
-                    caption = f"Audio - {title}"
+                    caption = f"Audio  {title}"
                 else:
-                    caption = f"Media - {title}"
+                    caption = f"Media  {title}"
                 
                 # Mark URL as processed
                 mark_url_as_processed(url, downloaded_file)
@@ -971,7 +971,7 @@ def handle_generic_content(recipient_id: str, url: str):
                     
                 # If sending failed, send a message about it
                 if not result.get('success', False):
-                    messenger.send_message(f"File downloaded but failed to send. Error: {result.get('error', 'Unknown error')}", recipient_id)
+                    messenger.send_message(f"File downloaded but failed to send\nError: {result.get('error', 'Unknown error')}", recipient_id)
             else:
                 messenger.send_message("Download failed - No file found", recipient_id)
         else:
@@ -985,17 +985,25 @@ def handle_generic_content(recipient_id: str, url: str):
         elif "private" in error_msg or "unavailable" in error_msg:
             messenger.send_message("Content is private or unavailable", recipient_id)
         elif "404" in error_msg:
-            messenger.send_message("Content not found (404 error). This might be a temporary issue or the content may have been removed.", recipient_id)
+            messenger.send_message("Content not found (404 error)\nThis might be a temporary issue or the content may have been removed.", recipient_id)
         elif "sign in to confirm you're not a bot" in error_msg:
-            messenger.send_message("Authentication required. Please update your cookies file for this platform.", recipient_id)
+            messenger.send_message("Authentication required\nPlease update your cookies file for this platform.", recipient_id)
         else:
-            messenger.send_message(f"Failed to download content. Error: {str(e)}", recipient_id)
+            messenger.send_message(f"Failed to download content\nError: {str(e)}", recipient_id)
 
 def process_message(recipient_id: str, text: str):
     """Process incoming WhatsApp messages"""
     # Handle commands
     if text.lower() in ['help', 'start']:
-        welcome_text = "Ultra-Fast Media Downloader. Download from YouTube, Instagram, TikTok, Spotify, Twitter, Facebook and more! Features: HD Video Quality (up to 1080p), High-Quality Audio (320kbps), Image & Post Download, No Watermarks, Lightning Fast Download. Just send any social media link and I'll handle the rest automatically!"
+        welcome_text = "Ultra-Fast Media Downloader\n\n"
+        welcome_text += "Download from YouTube, Instagram, TikTok, Spotify, Twitter, Facebook and more!\n\n"
+        welcome_text += "Features:\n"
+        welcome_text += " HD Video Quality (up to 1080p)\n"
+        welcome_text += " High-Quality Audio (320kbps)\n"
+        welcome_text += " Image & Post Download\n"
+        welcome_text += " No Watermarks\n"
+        welcome_text += " Lightning Fast Download\n\n"
+        welcome_text += "Just send any social media link and I'll handle the rest automatically!"
         messenger.send_message(welcome_text, recipient_id)
         return
     
@@ -1010,7 +1018,7 @@ def process_message(recipient_id: str, text: str):
         return
     
     # Default response for unrecognized messages
-    messenger.send_message("Tip: Send a social media link to download content, or type 'help' for more information!", recipient_id)
+    messenger.send_message("Tip\n\nSend a social media link to download content, or type 'help' for more information!", recipient_id)
 
 def verify_webhook(mode: str, token: str, challenge: str):
     """Verify webhook subscription"""
