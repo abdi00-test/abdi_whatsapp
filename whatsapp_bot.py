@@ -478,6 +478,16 @@ def detect_platform(url: str) -> Optional[str]:
     logger.warning(f"❓ Unknown platform for URL: {url}")
     return None
 
+def normalize_youtube_shorts_url(url: str) -> str:
+    """Convert YouTube Shorts URL to standard watch URL"""
+    if 'youtube.com/shorts/' in url:
+        # Extract video ID from Shorts URL
+        match = re.search(r'youtube\.com/shorts/([^/?]+)', url)
+        if match:
+            video_id = match.group(1)
+            return f"https://www.youtube.com/watch?v={video_id}"
+    return url
+
 def is_supported_url(url: str) -> bool:
     """Check if URL is from supported platform"""
     return detect_platform(url) is not None
@@ -1558,6 +1568,16 @@ async def send_instagram_media_group(recipient_id: str, media_data: Dict):
 
 async def handle_link(recipient_id: str, url: str):
     """Handle incoming links with intelligent processing"""
+    # Normalize YouTube Shorts URLs
+    if 'youtube.com/shorts/' in url:
+        # Extract video ID from Shorts URL
+        import re
+        match = re.search(r'youtube\.com/shorts/([^/?]+)', url)
+        if match:
+            video_id = match.group(1)
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            logger.info(f"🔄 Normalized YouTube Shorts URL to: {url}")
+    
     if not url.startswith(('http://', 'https://')):
         messenger.send_message("❌ Invalid URL\n\nPlease send a valid link starting with http:// or https://", recipient_id)
         return
