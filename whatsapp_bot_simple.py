@@ -5,7 +5,7 @@ import re
 import logging
 import json
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Union
 
 # Import heyoo for WhatsApp API
 try:
@@ -298,14 +298,15 @@ def download_instagram_reel_with_ytdlp(url: str) -> str:
         # Create temporary directory
         temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
         
-        # yt-dlp options for downloading
+        # yt-dlp options for downloading - handle both videos and images
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best[ext=mp4]/best/bestvideo+bestaudio/best',
             'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
             'merge_output_format': 'mp4',
             'noplaylist': True,
+            'extractor_args': {'instagram': {'api': 'mobile'}},  # Use mobile API for better compatibility
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -314,29 +315,39 @@ def download_instagram_reel_with_ytdlp(url: str) -> str:
             # Find downloaded file
             video_file = None
             for file in os.listdir(temp_dir):
-                if file.endswith(('.mp4', '.mov', '.avi', '.mkv')):
+                if file.endswith(('.mp4', '.mov', '.avi', '.mkv', '.jpg', '.jpeg', '.png', '.webp')):
                     video_file = os.path.join(temp_dir, file)
                     break
             
             if not video_file:
-                raise Exception("No video file found after download")
+                # Try any file if specific extensions don't work
+                for file in os.listdir(temp_dir):
+                    file_path = os.path.join(temp_dir, file)
+                    if os.path.isfile(file_path):
+                        video_file = file_path
+                        break
+            
+            if not video_file:
+                raise Exception("No media file found after download")
             
             return video_file
     except Exception as e:
         logger.error(f"Failed to download Instagram reel with yt-dlp: {e}")
         raise
 
-def extract_instagram_post_info_with_ytdlp(url: str) -> Dict[str, str]:
+def extract_instagram_post_info_with_ytdlp(url: str) -> Dict[str, Union[str, bool, int]]:
     """Extract Instagram post title and creator information using yt-dlp"""
     if not YTDLP_AVAILABLE or yt_dlp is None:
         return {
             'title': "Instagram Post",
-            'creator': "Unknown"
+            'creator': "Unknown",
+            'is_carousel': False,
+            'media_count': 1
         }
     
     try:
         # yt-dlp options for extracting info only (no download)
-        ydl_opts = {
+        ydl_opts: Dict[str, Any] = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
@@ -365,8 +376,8 @@ def extract_instagram_post_info_with_ytdlp(url: str) -> Dict[str, str]:
             return {
                 'title': str(title),
                 'creator': str(creator),
-                'is_carousel': is_carousel,
-                'media_count': media_count
+                'is_carousel': bool(is_carousel),
+                'media_count': int(media_count)
             }
     except Exception as e:
         logger.error(f"Failed to extract Instagram post info with yt-dlp: {e}")
@@ -377,7 +388,7 @@ def extract_instagram_post_info_with_ytdlp(url: str) -> Dict[str, str]:
             'media_count': 1
         }
 
-def download_instagram_post_with_ytdlp(url: str) -> list:
+def download_instagram_post_with_ytdlp(url: str) -> List[str]:
     """Download Instagram post (including carousel) using yt-dlp"""
     if not YTDLP_AVAILABLE or yt_dlp is None:
         raise Exception("yt-dlp not available")
@@ -389,17 +400,18 @@ def download_instagram_post_with_ytdlp(url: str) -> list:
         # Create temporary directory
         temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
         
-        # yt-dlp options for downloading
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best/bestvideo+bestaudio',
+        # yt-dlp options for downloading - handle both videos and images
+        ydl_opts: Dict[str, Any] = {
+            'format': 'best[ext=mp4]/best/bestvideo+bestaudio/best',  # Prioritize mp4, but accept other formats
             'outtmpl': os.path.join(temp_dir, '%(id)s_%(media_index)d.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
             'merge_output_format': 'mp4',
             'noplaylist': True,
+            'extractor_args': {'instagram': {'api': 'mobile'}},  # Use mobile API for better compatibility
         }
         
-        downloaded_files = []
+        downloaded_files: List[str] = []
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -407,23 +419,43 @@ def download_instagram_post_with_ytdlp(url: str) -> list:
             # Handle carousel posts (multiple media)
             if info.get('entries'):
                 # Carousel post with multiple media
-                for entry in info['entries']:
+                entries = info.get('entries', [])
+                for i, entry in enumerate(entries):
                     # Find downloaded file for this entry
-                    entry_files = []
+                    entry_files: List[str] = []
                     for file in os.listdir(temp_dir):
+                        # Match files that contain the entry ID
                         if entry.get('id') and entry['id'] in file:
+                            entry_files.append(os.path.join(temp_dir, file))
+                        # For carousel posts, also match by index
+                        elif f'_{i+1}.' in file:
                             entry_files.append(os.path.join(temp_dir, file))
                     
                     if entry_files:
                         # Add the first file found for this entry
                         downloaded_files.append(entry_files[0])
+                    else:
+                        # If no file found by ID, try to find any new file
+                        for file in os.listdir(temp_dir):
+                            file_path = os.path.join(temp_dir, file)
+                            if file_path not in downloaded_files and os.path.isfile(file_path):
+                                downloaded_files.append(file_path)
+                                break
             else:
                 # Single media post
                 # Find downloaded file
                 for file in os.listdir(temp_dir):
-                    if file.endswith(('.mp4', '.mov', '.avi', '.mkv', '.jpg', '.jpeg', '.png')):
-                        downloaded_files.append(os.path.join(temp_dir, file))
+                    file_path = os.path.join(temp_dir, file)
+                    if file.endswith(('.mp4', '.mov', '.avi', '.mkv', '.jpg', '.jpeg', '.png', '.webp')) and os.path.isfile(file_path):
+                        downloaded_files.append(file_path)
                         break
+        
+        # If no files found, try a more generic approach
+        if not downloaded_files:
+            for file in os.listdir(temp_dir):
+                file_path = os.path.join(temp_dir, file)
+                if os.path.isfile(file_path):
+                    downloaded_files.append(file_path)
         
         if not downloaded_files:
             raise Exception("No media files found after download")
